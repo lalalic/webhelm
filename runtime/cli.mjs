@@ -25,6 +25,7 @@ Usage:
   webhelm migrate  # after stopping Chrome and the old WebHelm daemon
   webhelm setup
   webhelm status
+  webhelm ensure  # verify/recover managed Chrome and Harness, not just daemon ping
   webhelm capacity [--workspace NAME]
   webhelm session start [--url URL]
   webhelm session list
@@ -109,9 +110,10 @@ async function main(args = process.argv.slice(2)) {
   if (group === 'setup') {
     const repo=await ensureActions();
     const chrome=await ensureDaemon();
-    const login_guard=installLoginGuard();
+    const login_guard=installLoginGuard({cliPath:fileURLToPath(import.meta.url),nodePath:process.execPath});
     return emit({status:'ready',...repo,daemon_pid:chrome.pid,managed_chrome:chrome.managed_chrome,login_guard});
   }
+  if (group === 'ensure') return emit(await request({op:'guard-check'}));
   if (group === 'status') {
     const daemon = await ensureDaemon();
     return emit({version:daemon.version, platform_dir:PLATFORMS, root:ROOT,
