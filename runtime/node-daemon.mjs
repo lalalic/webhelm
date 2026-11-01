@@ -136,16 +136,21 @@ async function guardManagedChrome(){
     await connectBrowser();
   }
   managedChrome=actual;
-  let state;
-  try {state=await extensionCall(null,'workspace.status',{name:'Harness'});}
-  catch(error){
-    if(sessions.size)throw error; // Never hot reload an Extension used by active Sessions.
-    const browser=await connectBrowser();
-    await ensureExtensionLoaded(browser);
-    state=await extensionCall(null,'workspace.status',{name:'Harness'});
-  }
-  if(!state?.initialized || !Number.isInteger(state.physicalTabs) || state.physicalTabs<1)
-    state=await extensionCall(null,'workspace.ensure',{name:'Harness'});
+  // Session leasing also creates missing workspaces. Serialize this short
+  // identity transaction with session start so one group is created, not two.
+  const state=await leaseMutex('Harness').run(async()=>{
+    let current;
+    try {current=await extensionCall(null,'workspace.status',{name:'Harness'});}
+    catch(error){
+      if(sessions.size)throw error; // Never hot reload an Extension used by active Sessions.
+      const browser=await connectBrowser();
+      await ensureExtensionLoaded(browser);
+      current=await extensionCall(null,'workspace.status',{name:'Harness'});
+    }
+    if(!current?.initialized || !Number.isInteger(current.physicalTabs) || current.physicalTabs<1)
+      current=await extensionCall(null,'workspace.ensure',{name:'Harness'});
+    return current;
+  });
   return {managed_chrome_pid:actual.pid,group_id:state.groupId,physical_tabs:state.physicalTabs};
 }
 const managedChromeGuard=createManagedChromeGuard(guardManagedChrome,{

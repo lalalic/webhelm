@@ -8,6 +8,7 @@ import { ensureDaemon, request, handle, SOCKET } from './node-daemon.mjs';
 import { PLATFORMS, listPlatforms, platformProfile, actionPath, validateConfig } from './platforms.mjs';
 import { ACTIONS_DIR, ensureActions, syncActions, publishActions } from './actions-repo.mjs';
 import { migrateConfig, migrateChromeProfile } from './migrate.mjs';
+import { installLoginGuard } from './login-guard.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const emit = value => console.log(JSON.stringify(value));
@@ -108,7 +109,8 @@ async function main(args = process.argv.slice(2)) {
   if (group === 'setup') {
     const repo=await ensureActions();
     const chrome=await ensureDaemon();
-    return emit({status:'ready',...repo,daemon_pid:chrome.pid,managed_chrome:chrome.managed_chrome});
+    const login_guard=installLoginGuard();
+    return emit({status:'ready',...repo,daemon_pid:chrome.pid,managed_chrome:chrome.managed_chrome,login_guard});
   }
   if (group === 'status') {
     const daemon = await ensureDaemon();
