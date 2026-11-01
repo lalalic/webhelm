@@ -10,9 +10,11 @@ import { invokePlatformAction } from './platforms.mjs';
 import { ChatGPTQueue } from './chatgpt/chatgpt-queue.mjs';
 import { idleUrlFromIdentity, sameIdleUrl, staleSession } from './session-lifecycle.mjs';
 import { ensureManagedChrome } from './chrome.mjs';
+import { ensureExtensionLoaded } from './extension-manager.mjs';
 import { PROFILE_DIR, RUNTIME_DIR, requireMigratedConfig } from './config-paths.mjs';
 
-const ROOT = path.dirname(new URL(import.meta.url).pathname);
+const ROOT = path.dirname(fileURLToPath(import.meta.url));
+const PACKAGE_VERSION=JSON.parse(fs.readFileSync(new URL('../package.json',import.meta.url),'utf8')).version;
 const HOME = os.homedir();
 export { PROFILE_DIR };
 const DEFAULT_RUNTIME = RUNTIME_DIR;
@@ -98,6 +100,8 @@ async function connectBrowser() {
       }
     });
     await browser.send('Target.setDiscoverTargets',{discover:true});
+    try{await ensureExtensionLoaded(browser,{skip:process.env.WEBHELM_NO_PROFILE_EXTENSION_PROBE==='1',allowUpdate:sessions.size===0});}
+    catch(error){browserWs=null;browser.ws?.close();throw error;}
     connected=true;
     if(!reconnecting){
       reconnecting=true;
@@ -304,6 +308,7 @@ async function createSession(req={}) {
       s.idleUrls.set(targetId,lease.idleUrl);
       s.workspaceSupported=true;
     } else {
+      if(process.env.WEBHELM_NO_PROFILE_EXTENSION_PROBE!=='1')throw Error('Managed WebHelm Extension unavailable; refusing unmanaged Tab allocation');
       ({targetId}=await browser.send('Target.createTarget',{url:'about:blank'}));
     }
     s.targetId=targetId;
@@ -533,7 +538,7 @@ async function runPlatform(req) {
     self_heal_capable:!auto,result};
 }
 
-export async function handle(req){switch(req.op){case'ping':return {ok:true,pid:process.pid,version:'1.0.1',queue_paused:process.env.WEBHELM_CHATGPT_QUEUE_PAUSED==='1',session_count:sessions.size,managed_chrome:managedChrome||{profile_dir:PROFILE_DIR, endpoint:process.env.WEBHELM_CDP_URL||'http://127.0.0.1:9222',reused:true}};case'heartbeat':return heartbeatSession(req.session_id);case'list':return {session_count:sessions.size,sessions:[...sessions.values()].map(s=>({session_id:s.session_id,workspace:s.workspace,target_id:s.targetId,last_used_at:s.last_used_at}))};case'start':return createSession(req);case'exec':return execute(req);case'stop':return stopSession(req.session_id);case'stop-all':{const stopped=[];for(const id of [...sessions.keys()])stopped.push(await stopSession(id));return {stopped_count:stopped.length,error_count:0,stopped,errors:[]}}case'capacity':return workspaceCapacity(req);case'workspace-create':case'workspace-delete':return workspaceOp(req);case'chatgpt-new-turn-enqueue':return getChatGPTQueue().enqueue(req.config);case'platform-run':return runPlatform(req);default:throw Error(`unknown op: ${req.op}`)}}
+export async function handle(req){switch(req.op){case'ping':return {ok:true,pid:process.pid,version:PACKAGE_VERSION,queue_paused:process.env.WEBHELM_CHATGPT_QUEUE_PAUSED==='1',session_count:sessions.size,managed_chrome:managedChrome||{profile_dir:PROFILE_DIR, endpoint:process.env.WEBHELM_CDP_URL||'http://127.0.0.1:9222',reused:true}};case'heartbeat':return heartbeatSession(req.session_id);case'list':return {session_count:sessions.size,sessions:[...sessions.values()].map(s=>({session_id:s.session_id,workspace:s.workspace,target_id:s.targetId,last_used_at:s.last_used_at}))};case'start':return createSession(req);case'exec':return execute(req);case'stop':return stopSession(req.session_id);case'stop-all':{const stopped=[];for(const id of [...sessions.keys()])stopped.push(await stopSession(id));return {stopped_count:stopped.length,error_count:0,stopped,errors:[]}}case'capacity':return workspaceCapacity(req);case'workspace-create':case'workspace-delete':return workspaceOp(req);case'chatgpt-new-turn-enqueue':return getChatGPTQueue().enqueue(req.config);case'platform-run':return runPlatform(req);default:throw Error(`unknown op: ${req.op}`)}}
 function serve(conn) {
   let buffer = '';
   conn.setEncoding('utf8');
@@ -553,6 +558,6 @@ function serve(conn) {
 
 async function main(){fs.mkdirSync(RUNTIME,{recursive:true,mode:0o700});let lockfd;try{lockfd=fs.openSync(LOCK,'wx',0o600);fs.writeFileSync(lockfd,String(process.pid))}catch{throw Error(`Node pilot lock exists: ${LOCK}`)}if(fs.existsSync(SOCKET)){try{const c=net.createConnection(SOCKET);await new Promise((res,rej)=>{c.once('connect',res);c.once('error',rej)});c.destroy();fs.closeSync(lockfd);fs.unlinkSync(LOCK);throw Error(`Node daemon socket already active: ${SOCKET}`)}catch(e){if(e.message.includes('already active'))throw e;fs.unlinkSync(SOCKET)}}socket=net.createServer(serve);await new Promise((res,rej)=>socket.listen(SOCKET,res).once('error',rej));fs.chmodSync(SOCKET,0o600);connectBrowser().catch(()=>{});getChatGPTQueue();const cleanup=async()=>{if(shuttingDown)return;shuttingDown=true;if(chatgptQueue)await chatgptQueue.shutdown().catch(()=>{});await handle({op:'stop-all'}).catch(()=>{});socket?.close();try{if(fs.existsSync(SOCKET))fs.unlinkSync(SOCKET)}catch{}try{fs.closeSync(lockfd);fs.unlinkSync(LOCK)}catch{}process.exit(0)};process.on('SIGTERM',cleanup);process.on('SIGINT',cleanup)}
 async function request(payload,ensure=true){if(ensure)await ensureDaemon();return new Promise((resolve,reject)=>{const c=net.createConnection(SOCKET);let data='';c.setEncoding('utf8');c.on('connect',()=>c.write(JSON.stringify(payload)+'\n'));c.on('data',x=>{data+=x;if(!data.includes('\n'))return;c.end();try{const r=JSON.parse(data);r.error?reject(Error(r.error)):resolve(r)}catch(e){reject(e)}});c.on('error',reject)})}
-export async function ensureDaemon(){requireMigratedConfig();try{const p=await request({op:'ping'},false);if(p.ok)return p}catch{}fs.mkdirSync(RUNTIME,{recursive:true,mode:0o700});if(fs.existsSync(LOCK)){let owner=0;try{owner=Number(fs.readFileSync(LOCK,'utf8').trim())}catch{};let alive=false;if(owner>0)try{process.kill(owner,0);alive=true}catch{};if(alive)throw Error(`daemon owner lock exists but socket is unreachable; refusing duplicate startup (${LOCK})`);fs.unlinkSync(LOCK)}const child=await import('node:child_process');const log=fs.openSync(path.join(RUNTIME,'session-node.log'),'a');child.spawn(process.execPath,[fileURLToPath(import.meta.url),'daemon'],{detached:true,stdio:['ignore',log,log],env:process.env}).unref();for(let i=0;i<100;i++){await delay(100);try{const p=await request({op:'ping'},false);if(p.ok)return p}catch{}}throw Error(`WebHelm Node daemon did not start; see ${path.join(RUNTIME,'session-node.log')}`)}
+export async function ensureDaemon(){if(!process.env.WEBHELM_CDP_URL)requireMigratedConfig();try{const p=await request({op:'ping'},false);if(p.ok)return p}catch{}fs.mkdirSync(RUNTIME,{recursive:true,mode:0o700});if(fs.existsSync(LOCK)){let owner=0;try{owner=Number(fs.readFileSync(LOCK,'utf8').trim())}catch{};let alive=false;if(owner>0)try{process.kill(owner,0);alive=true}catch{};if(alive)throw Error(`daemon owner lock exists but socket is unreachable; refusing duplicate startup (${LOCK})`);fs.unlinkSync(LOCK)}const child=await import('node:child_process');const log=fs.openSync(path.join(RUNTIME,'session-node.log'),'a');child.spawn(process.execPath,[fileURLToPath(import.meta.url),'daemon'],{detached:true,stdio:['ignore',log,log],env:process.env}).unref();for(let i=0;i<100;i++){await delay(100);try{const p=await request({op:'ping'},false);if(p.ok)return p}catch{}}throw Error(`WebHelm Node daemon did not start; see ${path.join(RUNTIME,'session-node.log')}`)}
 if(process.argv[2]==='daemon')main().catch(e=>{console.error(e);process.exit(1)});
 export {request,SOCKET,RUNTIME};

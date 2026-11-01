@@ -8,7 +8,7 @@ requires:
 
 # WebHelm
 
-**This Skill belongs to `lalalic/webhelm`.** It contains agent instructions, the Chrome Extension, interaction guides, and a small CLI launcher. The browser Runtime is the independently published `webhelm` npm package. Site-specific Actions live in `lalalic/webhelm-actions`, checked out locally to `~/.local/webhelm`.
+**This Skill belongs to `lalalic/webhelm`.** It contains agent instructions, interaction guides, and a small CLI launcher. The Extension is bundled with the npm Runtime, not this Skill. The browser Runtime is the independently published `webhelm` npm package. Site-specific Actions live in `lalalic/webhelm-actions`, checked out locally to `~/.local/webhelm`.
 
 ## Setup
 
@@ -17,7 +17,7 @@ Install the Skill with the trusted skill installer, e.g. `npx skills add lalalic
 ```sh
 SKILL_DIR="<absolute directory containing this SKILL.md>"
 sh "$SKILL_DIR/scripts/install-global-cli.sh"
-webhelm migrate  # when upgrading an existing Browser Workspace installation, with Chrome/daemon stopped
+webhelm migrate  # after draining Sessions and stopping managed Chrome/daemon
 webhelm setup
 webhelm status
 webhelm capacity
@@ -76,11 +76,11 @@ When an agent discovers an unsupported platform or needs to repair an Action, fi
 
 NeoY and Relay's caller compatibility is maintained: completed platform actions provide `result.stdout` as machine-readable JSON and `result.value` as a structured result. NeoY discovers the stable `admin_helper` from `webhelm status`. `webhelm capacity` reads the Extension workspace without opening a new Session.
 
-## Chrome Extension and updates
+## Chrome Extension (Daemon-owned)
 
-The single canonical extension source remains in this repository at `skills/webhelm/extension/` (published Chrome Extension ID `kkkpgmhpoeceojalkpfdidffdfnlgdog`). It manages visible Tab Groups and leases, not another OS daemon. Use the verified Chrome Web Store install, or `sh "$SKILL_DIR/scripts/prepare-local-extension.sh"` for manually approved offline installation. Do not install duplicates.
+The npm Runtime embeds the Chrome Extension under `runtime/extension/`; **the Skill contains no Extension files**. The Node daemon stages it at the stable local directory `~/.local/webhelm/extension` and verifies the fixed Extension ID `kkkpgmhpoeceojalkpfdidffdfnlgdog`. The managed Chrome launcher loads that directory with compatibility flags; recent Chrome may also use the CDP Extension protocol to load or update it. Runtime checks the active Extension version and refuses to allocate unmanaged tabs if it cannot confirm the expected version. Do not manually install, publish, or update the Web Store Extension.
 
-Updating this Skill via `npx skills add lalalic/webhelm --skill webhelm` only updates agent instructions and the extension source. Updating the CLI uses npm `webhelm@latest`. Updating Actions uses `webhelm platform sync`. These three releases are independent.
+A running daemon with active Sessions must not be restarted to update the Runtime or Extension. After Sessions and the FIFO have drained, install the new npm Runtime and restart only the daemon; only restart managed Chrome if it is safe to do so and an older Chrome cannot reload Extension through CDP. Source updates propagate through npm; `webhelm platform sync` updates only Actions, and `npx skills add` updates only agent instructions.
 
 ## Safe verification
 
@@ -88,4 +88,4 @@ For code under development, use test-specific `WEBHELM_RUNTIME_DIR`, `WEBHELM_SO
 
 ## Managed Chrome and durable data
 
-The canonical browser data root is `~/.config/webhelm/`: `chrome/` holds the existing signed-in Chrome Profile; `runtime/` holds the SQLite ChatGPT FIFO, logs, lock and socket; `auth-audit/` and any legacy auxiliary data are also preserved. On nodes previously using `~/.config/browser-workspace/`, stop the legacy Node daemon and Chrome (after closing owned Sessions), then use `webhelm migrate`. It performs an atomic same-filesystem rename and keeps a compatibility symlink at the legacy path for retired maintenance tasks. Never create a second empty Chrome Profile while the legacy profile exists. Restart using `webhelm setup` and verify Profile path, Chrome logins, queue counts and a caller-owned browser Session. Do not remove the compatibility symlink while external scheduled callers still use it.
+The canonical browser data root is `~/.local/webhelm/`: `chrome/` contains the existing signed-in Chrome Profile, `platforms/` contains site Actions, and `extension/` is managed by Daemon. `~/.config/webhelm/runtime/` retains the SQLite ChatGPT FIFO, logs, lock and socket; `auth-audit/` and any legacy auxiliary data are also preserved. On nodes previously using `~/.config/browser-workspace/`, stop the legacy Node daemon and Chrome (after closing owned Sessions), then use `webhelm migrate`. This migrates the Chrome Profile to `~/.local/webhelm/chrome` and leaves a compatibility symlink at `~/.config/webhelm/chrome`, while retaining runtime queue data under `~/.config/webhelm/runtime`. Never create a second empty Chrome Profile while the legacy profile exists. Restart using `webhelm setup` and verify Profile path, Chrome logins, queue counts and a caller-owned browser Session. Do not remove the compatibility symlink while external scheduled callers still use it.

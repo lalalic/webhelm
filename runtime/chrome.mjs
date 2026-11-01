@@ -3,7 +3,8 @@ import path from 'node:path';
 import net from 'node:net';
 import { spawn, execFileSync } from 'node:child_process';
 
-import { CONFIG_ROOT, PROFILE_DIR, requireMigratedConfig } from './config-paths.mjs';
+import { CONFIG_ROOT, PROFILE_DIR, OLD_PROFILE_DIR, requireMigratedConfig } from './config-paths.mjs';
+import { stageExtension } from './extension-manager.mjs';
 const ROOT = CONFIG_ROOT;
 const PROFILE = PROFILE_DIR;
 const STATE = path.join(ROOT, 'managed-chrome.json');
@@ -103,9 +104,12 @@ export async function ensureManagedChrome(){
     if(override)return {mode:'override',reused:true,endpoint:override,profile_dir:PROFILE};
     const port=await choosePort();
     const chrome=browserExecutable();
+    const extension=stageExtension();
     const log=fs.openSync(path.join(ROOT,'managed-chrome.log'),'a');
     fs.mkdirSync(PROFILE,{recursive:true});
     const child=spawn(chrome,[`--user-data-dir=${PROFILE}`,`--remote-debugging-port=${port}`,
+      '--disable-features=DisableLoadExtensionCommandLineSwitch',
+      `--load-extension=${extension.path}`,
       '--no-first-run','--no-default-browser-check','about:blank'],
       {detached:true,stdio:['ignore',log,log]});
     child.unref();

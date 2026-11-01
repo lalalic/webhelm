@@ -6,7 +6,7 @@
 
 | Repository | Contents | Updates |
 |---|---|---|
-| [`lalalic/webhelm`](https://github.com/lalalic/webhelm) | npm Runtime/CLI, Skill (`skills/webhelm`), Chrome Extension, tests | npm `webhelm@latest`; Skill source separately |
+| [`lalalic/webhelm`](https://github.com/lalalic/webhelm) | npm Runtime/CLI (including the Daemon-managed Chrome Extension), Skill (`skills/webhelm`), tests | npm `webhelm@latest`; Skill source separately |
 | [`lalalic/webhelm-actions`](https://github.com/lalalic/webhelm-actions) | Site manifests, ChatGPT/Z.ai/DeepSeek/XHS/etc. Actions | Git checkout at `~/.local/webhelm` |
 
 The npm package **does not include** the Skill or site Actions. The Skill's executable uses `npm exec --yes --package=webhelm@latest -- webhelm` to avoid inherited npm lifecycle variable conflicts; its contents may update without a Runtime release.
@@ -27,7 +27,7 @@ npx --yes webhelm@latest session stop SESSION_ID
 # Long-running worker managers: session heartbeat SESSION_ID every 60 seconds
 ```
 
-Use `npx skills add lalalic/webhelm --skill webhelm` to install agent guidance and the bundled Extension source. The Skill lives **in this repo** at `skills/webhelm/SKILL.md`.
+Use `npx skills add lalalic/webhelm --skill webhelm` to install agent guidance. The Extension is bundled with the npm Runtime and staged by WebHelm Daemon at `~/.local/webhelm/extension`. The Skill lives **in this repo** at `skills/webhelm/SKILL.md`. No Chrome Web Store publication or manual Extension installation is required.
 
 The Actions checkout is `~/.local/webhelm`, with site modules at `~/.local/webhelm/platforms`. Setup clones if absent, then reuses that checkout without discarding local modifications. Run `platform sync` for new commits. For a verified local Action fix, `platform publish --message "..."` tests, commits and pushes only the action changes to the separate repo.
 

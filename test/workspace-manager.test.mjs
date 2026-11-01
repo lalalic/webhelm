@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { WorkspaceManager } from "../skills/webhelm/extension/workspace-manager.mjs";
+import { WorkspaceManager } from "../runtime/extension/workspace-manager.mjs";
 
 function fakeChrome() {
   let nextTabId = 1;

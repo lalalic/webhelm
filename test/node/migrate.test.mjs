@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { migrateConfig } from '../../runtime/migrate.mjs';
+import { migrateConfig, migrateChromeProfile } from '../../runtime/migrate.mjs';
 
 const cases = () => {
   const base=fs.mkdtempSync(path.join(os.tmpdir(),'webhelm-migrate-test-'));
@@ -42,4 +42,42 @@ test('refuses to move data when an old daemon socket is active',async()=>{
   await assert.rejects(migrateConfig({legacyRoot:x.old,configRoot:x.dest,processList:()=>'',socketCheck:async()=>true}),/socket is active/);
   assert.ok(!fs.existsSync(x.dest));
  }finally{x.cleanup()}
+});
+
+test('Chrome-only migration moves data into local WebHelm root and excludes it from Actions Git',async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'webhelm-chrome-migrate-'));
+ try {
+  const old=path.join(root,'.config/webhelm/chrome'), newProfile=path.join(root,'.local/webhelm/chrome');
+  fs.mkdirSync(path.join(old,'Default'),{recursive:true});
+  fs.writeFileSync(path.join(old,'Default','Cookies'),'encrypted cookies preserved');
+  fs.mkdirSync(path.join(root,'.local/webhelm/.git/info'),{recursive:true});
+  fs.writeFileSync(path.join(root,'.local/webhelm/.git/info/exclude'),'# rules\n');
+  fs.mkdirSync(path.join(root,'.config/webhelm/runtime'),{recursive:true});
+  fs.writeFileSync(path.join(root,'.config/webhelm/runtime/db'),'durable fifo');
+  const result=await migrateChromeProfile({oldProfile:old,newProfile,processList:()=>'',socketCheck:async()=>false});
+  assert.equal(result.status,'migrated');
+  assert.equal(fs.readFileSync(path.join(newProfile,'Default/Cookies'),'utf8'),'encrypted cookies preserved');
+  assert.equal(fs.readFileSync(path.join(root,'.config/webhelm/runtime/db'),'utf8'),'durable fifo');
+  assert.ok(fs.lstatSync(old).isSymbolicLink());
+  assert.equal(fs.realpathSync(old),fs.realpathSync(newProfile));
+  assert.match(fs.readFileSync(path.join(root,'.local/webhelm/.git/info/exclude'),'utf8'),/\/chrome\//);
+  assert.equal((await migrateChromeProfile({oldProfile:old,newProfile})).status,'already_migrated');
+ } finally {fs.rmSync(root,{recursive:true,force:true})}
+});
+
+test('Chrome-only migration is blocked during active process, socket or conflicting destination',async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'webhelm-chrome-block-'));
+ try {
+  const old=path.join(root,'old/chrome'),target=path.join(root,'new/chrome');
+  fs.mkdirSync(path.join(old,'Default'),{recursive:true});
+  const opts={oldProfile:old,newProfile:target,socketCheck:async()=>false};
+  await assert.rejects(migrateChromeProfile({...opts,processList:()=>`Google Chrome --user-data-dir=${old}`}),/running/);
+  await assert.rejects(migrateChromeProfile({...opts,processList:()=>'/path/node-daemon.mjs daemon'}),/running/);
+  fs.mkdirSync(path.join(root,'old/runtime'),{recursive:true});
+  fs.writeFileSync(path.join(root,'old/runtime/session-node.sock'),'dummy');
+  await assert.rejects(migrateChromeProfile({...opts,processList:()=>'',socketCheck:async()=>true}),/still accepting/);
+  fs.mkdirSync(target,{recursive:true});
+  await assert.rejects(migrateChromeProfile({...opts,processList:()=>''}),/Different Chrome Profiles/);
+  assert.ok(fs.existsSync(path.join(old,'Default')));
+ }finally{fs.rmSync(root,{recursive:true,force:true})}
 });

@@ -76,7 +76,7 @@ jobs:
           node - "$RUNNER_TEMP/webhelm-pack.json" <<'NODE'
           const fs=require('fs');const item=JSON.parse(fs.readFileSync(process.argv[2],'utf8'))[0];
           const files=item.files.map(f=>f.path);
-          if(item.name!=='webhelm'||files.some(f=>f.includes('platforms/')||f.includes('skills/webhelm/'))||!files.includes('runtime/migrate.mjs')||!files.includes('bin/webhelm.mjs')){
+          if(item.name!=='webhelm'||files.some(f=>f.includes('platforms/')||f.includes('skills/webhelm/'))||!files.includes('runtime/migrate.mjs')||!files.includes('runtime/extension/manifest.json')||!files.includes('runtime/extension/service-worker.mjs')||!files.includes('bin/webhelm.mjs')){
             throw Error('npm package must contain CLI/Runtime but no platform Actions or Skill');
           }
           console.log(`${item.name}@${item.version} — ${files.length} files, ${item.size} bytes`);
