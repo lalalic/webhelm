@@ -3,7 +3,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 
 export const CONFIG_ROOT = path.resolve(process.env.WEBHELM_CONFIG_ROOT || path.join(os.homedir(), '.config', 'webhelm'));
-export const LEGACY_ROOT = path.join(os.homedir(), '.config', 'browser-workspace');
+export const LEGACY_ROOT = path.resolve(process.env.WEBHELM_LEGACY_ROOT || (process.env.WEBHELM_CONFIG_ROOT ? path.join(CONFIG_ROOT,'legacy-browser-workspace') : path.join(os.homedir(), '.config', 'browser-workspace')));
 export const LOCAL_ROOT = path.resolve(process.env.WEBHELM_LOCAL_ROOT || path.join(os.homedir(), '.local', 'webhelm'));
 export const OLD_PROFILE_DIR = path.join(CONFIG_ROOT, 'chrome');
 export const PROFILE_DIR = path.join(LOCAL_ROOT, 'chrome');
