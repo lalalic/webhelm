@@ -11,6 +11,7 @@ import { ChatGPTQueue } from './chatgpt/chatgpt-queue.mjs';
 import { idleUrlFromIdentity, sameIdleUrl, staleSession } from './session-lifecycle.mjs';
 import { ensureManagedChrome } from './chrome.mjs';
 import { ensureExtensionLoaded } from './extension-manager.mjs';
+import { createManagedChromeGuard } from './managed-chrome-guard.mjs';
 import { PROFILE_DIR, RUNTIME_DIR, requireMigratedConfig } from './config-paths.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -120,6 +121,37 @@ async function connectBrowser() {
   try{return await connectingBrowser;}
   finally{connectingBrowser=null;}
 }
+
+// The daemon owns both the managed Chrome process and the default Harness
+// group. Chrome auto-updates can terminate the browser while the Node daemon
+// survives; an RPC-only health check cannot recover that loss.
+async function guardManagedChrome(){
+  if(shuttingDown || process.env.WEBHELM_CDP_URL || process.env.WEBHELM_NO_PROFILE_EXTENSION_PROBE==='1')
+    return {skipped:true};
+  const actual=await ensureManagedChrome();
+  if(!browserWs || browserWs.closed || managedChrome?.pid!==actual.pid || managedChrome?.endpoint!==actual.endpoint){
+    const old=browserWs;
+    browserWs=null;connected=false;debuggerSession=null;
+    if(old && !old.closed)old.ws?.close();
+    await connectBrowser();
+  }
+  managedChrome=actual;
+  let state;
+  try {state=await extensionCall(null,'workspace.status',{name:'Harness'});}
+  catch(error){
+    if(sessions.size)throw error; // Never hot reload an Extension used by active Sessions.
+    const browser=await connectBrowser();
+    await ensureExtensionLoaded(browser);
+    state=await extensionCall(null,'workspace.status',{name:'Harness'});
+  }
+  if(!state?.initialized || !Number.isInteger(state.physicalTabs) || state.physicalTabs<1)
+    state=await extensionCall(null,'workspace.ensure',{name:'Harness'});
+  return {managed_chrome_pid:actual.pid,group_id:state.groupId,physical_tabs:state.physicalTabs};
+}
+const managedChromeGuard=createManagedChromeGuard(guardManagedChrome,{
+  intervalMs:Number(process.env.WEBHELM_CHROME_GUARD_INTERVAL_MS||15000),
+  onError:error=>console.warn(`WebHelm managed Chrome health check: ${error.message}`),
+});
 
 function adoptPopup(info){if(info?.type!=='page'||!info.openerId)return;const owner=targets.get(info.openerId);if(owner){owner.targets.add(info.targetId);targets.set(info.targetId,owner)}}
 async function attach(s,targetId,b=null){b ||= await connectBrowser();const {sessionId}=await b.send('Target.attachToTarget',{targetId,flatten:true});s.targets.add(targetId);s.attachments.set(targetId,sessionId);targets.set(targetId,s);for(const d of ['Page','DOM','Runtime','Network'])await b.send(`${d}.enable`,{},sessionId);for(const dispose of s.eventDisposers?.get(targetId)||[])dispose();const removers=[];for(const method of ['Page.loadEventFired','Page.domContentEventFired','Page.javascriptDialogOpening','Page.javascriptDialogClosed','Runtime.exceptionThrown','Network.requestWillBeSent','Network.responseReceived'])removers.push(b.on(method,(params,owner)=>{if(owner===sessionId){if(s.events.length>=500)s.events.shift();s.events.push({method,params,session_id:sessionId,target_id:targetId})}}));s.eventDisposers?.set(targetId,removers);return sessionId}
@@ -538,7 +570,7 @@ async function runPlatform(req) {
     self_heal_capable:!auto,result};
 }
 
-export async function handle(req){switch(req.op){case'ping':return {ok:true,pid:process.pid,version:PACKAGE_VERSION,queue_paused:process.env.WEBHELM_CHATGPT_QUEUE_PAUSED==='1',session_count:sessions.size,managed_chrome:managedChrome||{profile_dir:PROFILE_DIR, endpoint:process.env.WEBHELM_CDP_URL||'http://127.0.0.1:9222',reused:true}};case'heartbeat':return heartbeatSession(req.session_id);case'list':return {session_count:sessions.size,sessions:[...sessions.values()].map(s=>({session_id:s.session_id,workspace:s.workspace,target_id:s.targetId,last_used_at:s.last_used_at}))};case'start':return createSession(req);case'exec':return execute(req);case'stop':return stopSession(req.session_id);case'stop-all':{const stopped=[];for(const id of [...sessions.keys()])stopped.push(await stopSession(id));return {stopped_count:stopped.length,error_count:0,stopped,errors:[]}}case'capacity':return workspaceCapacity(req);case'workspace-create':case'workspace-delete':return workspaceOp(req);case'chatgpt-new-turn-enqueue':return getChatGPTQueue().enqueue(req.config);case'platform-run':return runPlatform(req);default:throw Error(`unknown op: ${req.op}`)}}
+export async function handle(req){switch(req.op){case'ping':return {ok:true,pid:process.pid,version:PACKAGE_VERSION,queue_paused:process.env.WEBHELM_CHATGPT_QUEUE_PAUSED==='1',session_count:sessions.size,managed_chrome:managedChrome||{profile_dir:PROFILE_DIR, endpoint:process.env.WEBHELM_CDP_URL||'http://127.0.0.1:9222',reused:true},chrome_guard:managedChromeGuard.status()};case'heartbeat':return heartbeatSession(req.session_id);case'list':return {session_count:sessions.size,sessions:[...sessions.values()].map(s=>({session_id:s.session_id,workspace:s.workspace,target_id:s.targetId,last_used_at:s.last_used_at}))};case'start':return createSession(req);case'exec':return execute(req);case'stop':return stopSession(req.session_id);case'stop-all':{const stopped=[];for(const id of [...sessions.keys()])stopped.push(await stopSession(id));return {stopped_count:stopped.length,error_count:0,stopped,errors:[]}}case'capacity':return workspaceCapacity(req);case'workspace-create':case'workspace-delete':return workspaceOp(req);case'chatgpt-new-turn-enqueue':return getChatGPTQueue().enqueue(req.config);case'platform-run':return runPlatform(req);default:throw Error(`unknown op: ${req.op}`)}}
 function serve(conn) {
   let buffer = '';
   conn.setEncoding('utf8');
@@ -556,7 +588,7 @@ function serve(conn) {
   });
 }
 
-async function main(){fs.mkdirSync(RUNTIME,{recursive:true,mode:0o700});let lockfd;try{lockfd=fs.openSync(LOCK,'wx',0o600);fs.writeFileSync(lockfd,String(process.pid))}catch{throw Error(`Node pilot lock exists: ${LOCK}`)}if(fs.existsSync(SOCKET)){try{const c=net.createConnection(SOCKET);await new Promise((res,rej)=>{c.once('connect',res);c.once('error',rej)});c.destroy();fs.closeSync(lockfd);fs.unlinkSync(LOCK);throw Error(`Node daemon socket already active: ${SOCKET}`)}catch(e){if(e.message.includes('already active'))throw e;fs.unlinkSync(SOCKET)}}socket=net.createServer(serve);await new Promise((res,rej)=>socket.listen(SOCKET,res).once('error',rej));fs.chmodSync(SOCKET,0o600);connectBrowser().catch(()=>{});getChatGPTQueue();const cleanup=async()=>{if(shuttingDown)return;shuttingDown=true;if(chatgptQueue)await chatgptQueue.shutdown().catch(()=>{});await handle({op:'stop-all'}).catch(()=>{});socket?.close();try{if(fs.existsSync(SOCKET))fs.unlinkSync(SOCKET)}catch{}try{fs.closeSync(lockfd);fs.unlinkSync(LOCK)}catch{}process.exit(0)};process.on('SIGTERM',cleanup);process.on('SIGINT',cleanup)}
+async function main(){fs.mkdirSync(RUNTIME,{recursive:true,mode:0o700});let lockfd;try{lockfd=fs.openSync(LOCK,'wx',0o600);fs.writeFileSync(lockfd,String(process.pid))}catch{throw Error(`Node pilot lock exists: ${LOCK}`)}if(fs.existsSync(SOCKET)){try{const c=net.createConnection(SOCKET);await new Promise((res,rej)=>{c.once('connect',res);c.once('error',rej)});c.destroy();fs.closeSync(lockfd);fs.unlinkSync(LOCK);throw Error(`Node daemon socket already active: ${SOCKET}`)}catch(e){if(e.message.includes('already active'))throw e;fs.unlinkSync(SOCKET)}}socket=net.createServer(serve);await new Promise((res,rej)=>socket.listen(SOCKET,res).once('error',rej));fs.chmodSync(SOCKET,0o600);connectBrowser().catch(()=>{});managedChromeGuard.start();getChatGPTQueue();const cleanup=async()=>{if(shuttingDown)return;shuttingDown=true;managedChromeGuard.stop();if(chatgptQueue)await chatgptQueue.shutdown().catch(()=>{});await handle({op:'stop-all'}).catch(()=>{});socket?.close();try{if(fs.existsSync(SOCKET))fs.unlinkSync(SOCKET)}catch{}try{fs.closeSync(lockfd);fs.unlinkSync(LOCK)}catch{}process.exit(0)};process.on('SIGTERM',cleanup);process.on('SIGINT',cleanup)}
 async function request(payload,ensure=true){if(ensure)await ensureDaemon();return new Promise((resolve,reject)=>{const c=net.createConnection(SOCKET);let data='';c.setEncoding('utf8');c.on('connect',()=>c.write(JSON.stringify(payload)+'\n'));c.on('data',x=>{data+=x;if(!data.includes('\n'))return;c.end();try{const r=JSON.parse(data);r.error?reject(Error(r.error)):resolve(r)}catch(e){reject(e)}});c.on('error',reject)})}
 export async function ensureDaemon(){try{const p=await request({op:'ping'},false);if(p.ok)return p}catch{}if(!process.env.WEBHELM_CDP_URL)requireMigratedConfig();fs.mkdirSync(RUNTIME,{recursive:true,mode:0o700});if(fs.existsSync(LOCK)){let owner=0;try{owner=Number(fs.readFileSync(LOCK,'utf8').trim())}catch{};let alive=false;if(owner>0)try{process.kill(owner,0);alive=true}catch{};if(alive)throw Error(`daemon owner lock exists but socket is unreachable; refusing duplicate startup (${LOCK})`);fs.unlinkSync(LOCK)}const child=await import('node:child_process');const log=fs.openSync(path.join(RUNTIME,'session-node.log'),'a');child.spawn(process.execPath,[fileURLToPath(import.meta.url),'daemon'],{detached:true,stdio:['ignore',log,log],env:process.env}).unref();for(let i=0;i<100;i++){await delay(100);try{const p=await request({op:'ping'},false);if(p.ok)return p}catch{}}throw Error(`WebHelm Node daemon did not start; see ${path.join(RUNTIME,'session-node.log')}`)}
 if(process.argv[2]==='daemon')main().catch(e=>{console.error(e);process.exit(1)});

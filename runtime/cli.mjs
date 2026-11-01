@@ -115,7 +115,7 @@ async function main(args = process.argv.slice(2)) {
     return emit({version:daemon.version, platform_dir:PLATFORMS, root:ROOT,
       cli:fileURLToPath(import.meta.url),
       admin_helper:process.env.WEBHELM_ADMIN_HELPER || (fs.existsSync(path.join(os.homedir(),'.agents/skills/webhelm/scripts/admin.mjs')) ? path.join(os.homedir(),'.agents/skills/webhelm/scripts/admin.mjs') : path.join(ROOT,'admin.mjs')),
-      managed_chrome:daemon.managed_chrome,
+      managed_chrome:daemon.managed_chrome, chrome_guard:daemon.chrome_guard,
       daemon:{running:true, pid:daemon.pid, session_count:daemon.session_count, queue_paused:daemon.queue_paused, socket:SOCKET}});
   }
   if (group === 'capacity') {

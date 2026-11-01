@@ -23,10 +23,19 @@ function alive(pid) {
   try { if(!pid) return false;process.kill(Number(pid), 0);return true; }
   catch {return false;}
 }
+function matchesManagedChromeProcess(pid,port) {
+  if(process.platform==='win32')return alive(pid); // Windows command-line discovery needs a separate provider.
+  try {
+    const command=execFileSync('ps',['-p',String(pid),'-o','command='],{encoding:'utf8',timeout:2500});
+    return command.includes(`--user-data-dir=${PROFILE}`) &&
+      command.includes(`--remote-debugging-port=${port}`) &&
+      !command.includes('--type=');
+  } catch{return false;}
+}
 async function fromState() {
   let state;
   try { state=JSON.parse(fs.readFileSync(STATE, 'utf8')); } catch { return null; }
-  if (state?.pid && Number.isInteger(state.port) && alive(state.pid) && await endpointLive(state.port)) return state;
+  if (state?.pid && Number.isInteger(state.port) && matchesManagedChromeProcess(state.pid,state.port) && await endpointLive(state.port)) return state;
   return null;
 }
 async function discover() {
@@ -39,7 +48,7 @@ async function discover() {
     const match=line.match(/^\s*(\d+)\s+.*?--remote-debugging-port=(\d+)/);
     if (!match) continue;
     const [pid,port]=match.slice(1).map(Number);
-    if (!alive(pid) || !await endpointLive(port)) continue;
+    if (!matchesManagedChromeProcess(pid,port) || !await endpointLive(port)) continue;
     const state={pid,port,profile_dir:PROFILE,chrome_path:line.slice(line.search(/\S/)).replace(/^\d+\s*/, '').split(' --user-data-dir=')[0]};
     fs.writeFileSync(STATE,JSON.stringify(state,null,2));
     return state;
