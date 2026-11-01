@@ -115,5 +115,3 @@ chrome.tabGroups.onRemoved.addListener((group) => {
     });
   }, 100);
 });
-
-});

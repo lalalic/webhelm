@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Browser Workspace",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Own named Chrome tab-group workspaces and lazy reusable tab pools for browser agents.",
   "permissions": [
     "storage",
