@@ -10,7 +10,7 @@ const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const source=path.join(root,'runtime/extension');
 
 test('bundled MV3 extension parses before npm publication',()=>{
-  assert.equal(extensionVersion,'0.3.3');
+  assert.equal(extensionVersion,JSON.parse(readFileSync(path.join(source,'manifest.json'),'utf8')).version);
   for(const name of ['service-worker.mjs','workspace-manager.mjs','workspace-page.mjs']){
     const r=spawnSync(process.execPath,['--check',path.join(source,name)],{encoding:'utf8'});
     assert.equal(r.status,0,`${name}: ${r.stderr}`);
