@@ -2,8 +2,39 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {execFileSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
 
 const LABEL='com.lalalic.webhelm.keepalive';
+// launchd must never depend on npm's removable npx cache, or on the Skill
+// launcher being present. Stage an immutable, package-backed runtime locally.
+export function stageRuntimeForLoginGuard({home=os.homedir(),source=fileURLToPath(new URL('../',import.meta.url)),yamlSource=null}={}){
+  const manifest=JSON.parse(fs.readFileSync(path.join(source,'package.json'),'utf8'));
+  if(manifest.name!=='webhelm'||!/^\d+\.\d+\.\d+$/.test(manifest.version))throw Error('Invalid WebHelm runtime package');
+  const parent=path.join(home,'.local/share/webhelm');
+  const target=path.join(parent,`runtime-${manifest.version}`);
+  const keyfiles=['package.json','bin/webhelm.mjs','runtime/cli.mjs','runtime/node-daemon.mjs','runtime/login-guard.mjs'];
+  const equal=()=>keyfiles.every(name=>fs.existsSync(path.join(target,name))&&fs.readFileSync(path.join(target,name)).equals(fs.readFileSync(path.join(source,name))))&&fs.existsSync(path.join(target,'node_modules/yaml/package.json'));
+  if(equal())return {path:target,version:manifest.version,updated:false};
+  const yamlDir=yamlSource||path.resolve(fileURLToPath(import.meta.resolve('yaml')),'../..');
+  if(!fs.existsSync(path.join(yamlDir,'package.json')))throw Error('Bundled Runtime yaml dependency missing');
+  fs.mkdirSync(parent,{recursive:true,mode:0o700});
+  const tmp=fs.mkdtempSync(path.join(parent,'.webhelm-runtime-stage-'));
+  try{
+    for(const dirname of ['bin','runtime'])fs.cpSync(path.join(source,dirname),path.join(tmp,dirname),{recursive:true});
+    fs.copyFileSync(path.join(source,'package.json'),path.join(tmp,'package.json'));
+    fs.mkdirSync(path.join(tmp,'node_modules'),{recursive:true});
+    fs.cpSync(yamlDir,path.join(tmp,'node_modules/yaml'),{recursive:true});
+    let old=null;
+    if(fs.existsSync(target)){
+      old=path.join(parent,`.webhelm-runtime-old-${process.pid}-${Date.now()}`);
+      fs.renameSync(target,old);
+    }
+    try{fs.renameSync(tmp,target);}catch(error){if(old)fs.renameSync(old,target);throw error;}
+    if(old)fs.rmSync(old,{recursive:true,force:true});
+    return {path:target,version:manifest.version,updated:true};
+  }finally{if(fs.existsSync(tmp))fs.rmSync(tmp,{recursive:true,force:true});}
+}
+
 const escapeXml=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[c]));
 export function loginGuardDefinition(home=os.homedir(),{cliPath=path.join(home,'.local/bin/webhelm'),nodePath=null}={}) {
   const cli=cliPath;
@@ -18,8 +49,8 @@ export function loginGuardDefinition(home=os.homedir(),{cliPath=path.join(home,'
 }
 export function installLoginGuard({home=os.homedir(), platform=process.platform, apply=true,cliPath,nodePath}={}){
   if(platform!=='darwin')return {status:'unsupported',label:LABEL};
-  const cli=path.join(home,'.local/bin/webhelm');
-  if(!fs.existsSync(cli))return {status:'skipped',reason:'webhelm Skill launcher missing',label:LABEL};
+  const cli=cliPath||path.join(home,'.local/bin/webhelm');
+  if(!fs.existsSync(cli))return {status:'skipped',reason:'WebHelm runtime launcher missing',label:LABEL};
   const dest=path.join(home,'Library/LaunchAgents',`${LABEL}.plist`);
   const content=loginGuardDefinition(home,{cliPath,nodePath});
   fs.mkdirSync(path.dirname(dest),{recursive:true});

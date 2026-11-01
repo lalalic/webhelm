@@ -3,9 +3,10 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {fileURLToPath} from 'node:url';
+import {LOCAL_ROOT} from './config-paths.mjs';
 
 export const EXTENSION_ID='kkkpgmhpoeceojalkpfdidffdfnlgdog';
-export const EXTENSION_HOME=path.resolve(process.env.WEBHELM_EXTENSION_HOME || path.join(os.homedir(),'.local/webhelm/extension'));
+export const EXTENSION_HOME=path.resolve(process.env.WEBHELM_EXTENSION_HOME || path.join(LOCAL_ROOT,'extension'));
 const SOURCE=fileURLToPath(new URL('./extension/',import.meta.url));
 const FILES=['manifest.json','service-worker.mjs','workspace-manager.mjs','workspace.html','workspace-page.mjs'];
 
