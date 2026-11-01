@@ -27,6 +27,7 @@ Usage:
   webhelm capacity [--workspace NAME]
   webhelm session start [--url URL]
   webhelm session list
+  webhelm session heartbeat SESSION_ID  # keep a working Session alive
   webhelm session exec SESSION_ID [--code-file FILE]   # JavaScript
   webhelm session stop SESSION_ID|--all
   webhelm platform list
@@ -126,6 +127,10 @@ async function main(args = process.argv.slice(2)) {
   if (group === 'session') {
     if (command === 'start') return emit(await request({op:'start', workspace:arg(args,'--workspace'), url:arg(args,'--url')}));
     if (command === 'list') return emit(await request({op:'list'}));
+    if (command === 'heartbeat') {
+      if (!args[2]) throw Error('session heartbeat requires SESSION_ID');
+      return emit(await request({op:'heartbeat',session_id:args[2]}));
+    }
     if (command === 'stop') return emit(await request(has(args,'--all') ? {op:'stop-all'} : {op:'stop',session_id:args[2]}));
     if (command === 'exec') {
       if (!args[2]) throw Error('session exec requires SESSION_ID');

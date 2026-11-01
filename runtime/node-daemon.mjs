@@ -8,6 +8,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { invokePlatformAction } from './platforms.mjs';
 import { ChatGPTQueue } from './chatgpt/chatgpt-queue.mjs';
+import { idleUrlFromIdentity, sameIdleUrl, staleSession } from './session-lifecycle.mjs';
 import { ensureManagedChrome } from './chrome.mjs';
 import { PROFILE_DIR, RUNTIME_DIR, requireMigratedConfig } from './config-paths.mjs';
 
@@ -49,6 +50,7 @@ function leaseMutex(workspace) {
 }
 async function acquireIdentityLease(session) {
   return leaseMutex(session.workspace).run(async()=>{
+    await reconcileWorkspaceSessions(session.workspace);
     const lease=await extensionCall(session,'workspace.acquireIdentity',{name:session.workspace});
     const targetId=await targetForUrl(lease.identityUrl);
     if(!targetId){
@@ -56,9 +58,10 @@ async function acquireIdentityLease(session) {
       throw Error('Workspace extension leased a tab without a matching CDP target');
     }
     if(targets.has(targetId)){
-      // Never release a tab owned by another active Session.
+      // Do not navigate/release a tab still owned by another Session.
       throw Error('Workspace extension returned a target already owned by another Session');
     }
+    lease.idleUrl ||= idleUrlFromIdentity(lease.identityUrl, lease.tabId);
     return {lease,targetId};
   });
 }
@@ -131,6 +134,7 @@ function makeHelpers(s){
     if(s.workspaceSupported){
       ({lease,targetId}=await acquireIdentityLease(s));
       s.leasedTabs.set(targetId,lease.tabId);
+      s.idleUrls.set(targetId,lease.idleUrl);
     }else ({targetId}=await browser.send('Target.createTarget',{url:'about:blank'}));
     await attach(s,targetId);
     s.targetId=targetId;
@@ -139,21 +143,20 @@ function makeHelpers(s){
     return targetId;
   },
   async close_tab(target) {
-    const targetId=typeof target==='string'?target:(target?.targetId||target?.target_id)||s.targetId;
-    if(!s.targets.has(targetId))throw Error('cannot close a tab outside the active WebHelm Session');
-    const lease=s.leasedTabs.get(targetId);
-    if(lease){
-      try{await extensionCall(s,'workspace.release',{name:s.workspace,tabId:lease});}
-      catch{await connectBrowser().then(b=>b.send('Target.closeTarget',{targetId}));}
-    }else await connectBrowser().then(b=>b.send('Target.closeTarget',{targetId}));
-    s.leasedTabs.delete(targetId);
-    s.targets.delete(targetId);
-    s.attachments.delete(targetId);
-    for(const dispose of s.eventDisposers.get(targetId)||[])dispose();
-    s.eventDisposers.delete(targetId);
-    targets.delete(targetId);
-    if(s.targetId===targetId)s.targetId=s.targets.values().next().value;
-    return {closed:true,target_id:targetId};
+    const tid=typeof target==='string'?target:(target?.targetId||target?.target_id)||s.targetId;
+    if(!s.targets.has(tid))throw Error('cannot close a tab outside the active WebHelm Session');
+    return leaseMutex(s.workspace).run(async()=>{
+      const browser=await connectBrowser();
+      if(s.leasedTabs.has(tid))await navigateIdle(browser,s,tid,s.idleUrls.get(tid));
+      else await browser.send('Target.closeTarget',{targetId:tid}); // Popup without pool slot.
+      const attachment=s.attachments.get(tid);
+      if(attachment)await browser.send('Target.detachFromTarget',{sessionId:attachment}).catch(()=>{});
+      s.leasedTabs.delete(tid);s.idleUrls.delete(tid);s.targets.delete(tid);s.attachments.delete(tid);
+      for(const dispose of s.eventDisposers.get(tid)||[])dispose();
+      s.eventDisposers.delete(tid);targets.delete(tid);
+      if(s.targetId===tid)s.targetId=s.targets.values().next().value;
+      return {closed:true,target_id:tid,returned_to_idle:true};
+    });
   },
   async page_info(){return evaluate(s,'({url:location.href,title:document.title,readyState:document.readyState})')},
   async wait_for_load(timeout=15000){const end=Date.now()+timeout;while(Date.now()<end){try{if(await evaluate(s,'document.readyState')==='complete')return true}catch{}await delay(100)}throw Error('page load timed out')},
@@ -291,12 +294,14 @@ async function createSession(req={}) {
   const sid=crypto.randomBytes(8).toString('hex');
   const s={session_id:sid, workspace:req.workspace||'Harness', targetId:null,
     rootTargetId:null, workspaceSupported:false,targets:new Set(), attachments:new Map(), eventDisposers:new Map(),
-    leasedTabs:new Map(), mutex:new Mutex(), events:[], namespace:null,context:null,last_used_at:Date.now()};
+    leasedTabs:new Map(), idleUrls:new Map(), mutex:new Mutex(), events:[], namespace:null,context:null,
+    inFlight:0, closing:false, last_used_at:Date.now()};
   let targetId,lease;
   try {
     if(await extensionSupported()) {
       ({lease,targetId}=await acquireIdentityLease(s));
       s.leasedTabs.set(targetId,lease.tabId);
+      s.idleUrls.set(targetId,lease.idleUrl);
       s.workspaceSupported=true;
     } else {
       ({targetId}=await browser.send('Target.createTarget',{url:'about:blank'}));
@@ -335,35 +340,110 @@ async function extensionSupported() {
   throw Error(`Browser Workspace extension installed but RPC unavailable: ${error?.message||'unknown'}`);
 }
 
-async function execute(req){const s=sessions.get(req.session_id);if(!s)throw Error(`unknown session_id: ${req.session_id}`);return s.mutex.run(async()=>{s.last_used_at=Date.now();const logs=[],errors=[];const sandbox={...s.namespace};sandbox.console={log:(...x)=>logs.push(x.map(v=>typeof v==='string'?v:JSON.stringify(v)).join(' ')),error:(...x)=>errors.push(x.map(v=>typeof v==='string'?v:JSON.stringify(v)).join(' ')),warn:(...x)=>errors.push(x.map(v=>typeof v==='string'?v:JSON.stringify(v)).join(' '))};s.context=vm.createContext(sandbox);try{let source=String(req.code||'').replace(/(^|\n)\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=/g,'$1globalThis.$2 =');const lines=source.trimEnd().split('\n');const last=lines.at(-1)?.trim()||'';if(last&&!last.endsWith(';')&&!/^(return|throw|if|for|while|function|class|\}|\/\/)/.test(last)){lines[lines.length-1]=`return (${last})`}source=lines.join('\n');const script=new vm.Script(`(async()=>{${source}\n})()`,{filename:'<webhelm-session>'});const result=await script.runInContext(s.context,{timeout:30000});Object.assign(s.namespace,sandbox);const out={session_id:s.session_id,workspace:s.workspace,target_id:s.targetId,ok:true,stdout:logs.join('\n'),stderr:errors.join('\n')};if(result!==undefined)Object.assign(out,jsonSafe(result));return out}catch(e){return {session_id:s.session_id,workspace:s.workspace,target_id:s.targetId,ok:false,stdout:logs.join('\n'),stderr:errors.join('\n'),error:`${e.name}: ${e.message}`}}})}
+async function execute(req) {
+  const s=sessions.get(req.session_id);
+  if(!s || s.closing)throw Error(`unknown session_id: ${req.session_id} (missing or closing)`);
+  s.inFlight++;
+  try {return await s.mutex.run(async()=>{
+    if(s.closing)throw Error('session closing');
+    s.last_used_at=Date.now();
+    const logs=[],errors=[];
+    const sandbox={...s.namespace};
+    sandbox.console={log:(...x)=>logs.push(x.map(v=>typeof v==='string'?v:JSON.stringify(v)).join(' ')),error:(...x)=>errors.push(x.map(v=>typeof v==='string'?v:JSON.stringify(v)).join(' ')),warn:(...x)=>errors.push(x.map(v=>typeof v==='string'?v:JSON.stringify(v)).join(' '))};
+    s.context=vm.createContext(sandbox);
+    try {
+      let source=String(req.code||'').replace(/(^|\n)\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=/g,'$1globalThis.$2 =');
+      const lines=source.trimEnd().split('\n');
+      const last=lines.at(-1)?.trim()||'';
+      if(last&&!last.endsWith(';')&&!/^(return|throw|if|for|while|function|class|\}|\/\/)/.test(last))lines[lines.length-1]=`return (${last})`;
+      source=lines.join('\n');
+      const script=new vm.Script(`(async()=>{${source}\n})()`,{filename:'<webhelm-session>'});
+      const result=await script.runInContext(s.context,{timeout:30000});
+      Object.assign(s.namespace,sandbox);
+      const out={session_id:s.session_id,workspace:s.workspace,target_id:s.targetId,ok:true,stdout:logs.join('\n'),stderr:errors.join('\n')};
+      if(result!==undefined)Object.assign(out,jsonSafe(result));
+      return out;
+    }catch(e){return {session_id:s.session_id,workspace:s.workspace,target_id:s.targetId,ok:false,stdout:logs.join('\n'),stderr:errors.join('\n'),error:`${e.name}: ${e.message}`}}
+  });} finally {s.inFlight--;s.last_used_at=Date.now();}
+}
+
+async function targetUrl(browser,targetId) {
+  const reply=await browser.send('Target.getTargetInfo',{targetId});
+  return reply.targetInfo?.url||'';
+}
+
+async function navigateIdle(browser,s,targetId,idleUrl){
+  if(!idleUrl)throw Error('missing idle URL for owned tab');
+  if(sameIdleUrl(await targetUrl(browser,targetId),idleUrl))return;
+  await browser.send('Page.navigate',{url:idleUrl},sidFor(s,targetId));
+  for(let i=0;i<60;i++){
+    if(sameIdleUrl(await targetUrl(browser,targetId),idleUrl))return;
+    await delay(50);
+  }
+  throw Error('idle navigation not confirmed; Session retained');
+}
+
+// Must be invoked while the workspace's allocation mutex is held.
+async function closeSessionOwned(s){
+  if(sessions.get(s.session_id)!==s)return {session_id:s.session_id,already_closed:true};
+  s.closing=true;
+  let release_error=null;
+  try {
+    const count=s.targets.size;
+    await s.mutex.run(async()=>{
+      const browser=await connectBrowser();
+      // Return managed tabs to their original Extension pool; keep their CDP targets.
+      for(const tid of [...s.targets]){
+        if(s.leasedTabs.has(tid)){
+          await navigateIdle(browser,s,tid,s.idleUrls.get(tid));
+        } else {
+          // Unleased child popup targets have no managed pool slot.
+          await browser.send('Target.closeTarget',{targetId:tid});
+        }
+      }
+      for(const [,attachment] of s.attachments)await browser.send('Target.detachFromTarget',{sessionId:attachment}).catch(()=>{});
+      for(const [tid,disposers] of s.eventDisposers){for(const dispose of disposers)dispose();targets.delete(tid);}
+      for(const tid of s.targets)targets.delete(tid);
+      s.targets.clear();s.attachments.clear();s.leasedTabs.clear();s.idleUrls.clear();s.eventDisposers.clear();
+      sessions.delete(s.session_id);
+    });
+    return {session_id:s.session_id,workspace:s.workspace,target_id:s.rootTargetId,closed_tabs:count,returned_to_idle:true,release_error};
+  }catch(error){
+    s.closing=false; // Keep ownership for a future retry; never reassign on unconfirmed navigation.
+    throw error;
+  }
+}
+
+async function reconcileWorkspaceSessions(workspace){
+  const browser=await connectBrowser();
+  for(const s of [...sessions.values()]){
+    if(s.workspace!==workspace||s.closing||s.inFlight>0)continue;
+    let alreadyIdle=false;
+    for(const [tid,idleUrl] of s.idleUrls){
+      try {if(sameIdleUrl(await targetUrl(browser,tid),idleUrl)){alreadyIdle=true;break;}}
+      catch {alreadyIdle=true;break;} // Lost target means this Session is no longer valid.
+    }
+    if(!alreadyIdle&&!staleSession(s))continue;
+    try {await closeSessionOwned(s);}
+    catch(error){console.error(JSON.stringify({component:'session-gc',session_id:s.session_id,error:String(error)}));}
+  }
+}
+
 async function stopSession(sid){
   const s=sessions.get(sid);
   if(!s)throw Error(`unknown session_id: ${sid}`);
-  const count=s.targets.size;
-  let release_error=null, recovered_tab_closes=0;
-  await s.mutex.run(async()=>{
-    const browser=await connectBrowser();
-    for(const tid of [...s.targets]){
-      try{
-        const leasedTabId=s.leasedTabs.get(tid);
-        if(leasedTabId) {
-          try{await extensionCall(s,'workspace.release',{name:s.workspace,tabId:leasedTabId});}
-          catch(error){
-            // If MV3 lost its transient ownership map, never leave an orphan.
-            // The CDP Target is owned exclusively by this Session.
-            await browser.send('Target.closeTarget',{targetId:tid});
-            recovered_tab_closes++;
-          }
-        }else await browser.send('Target.closeTarget',{targetId:tid});
-      }catch(error){release_error=release_error||String(error);}
-      s.leasedTabs.delete(tid);targets.delete(tid);
-      for(const dispose of s.eventDisposers.get(tid)||[])dispose();
-      s.eventDisposers.delete(tid);
-    }
-    for(const [,attachment] of s.attachments)await browser.send('Target.detachFromTarget',{sessionId:attachment}).catch(()=>{});
-    sessions.delete(sid);
-  });
-  return {session_id:sid,workspace:s.workspace,target_id:s.rootTargetId,closed_tabs:count,recovered_tab_closes,release_error};
+  s.closing=true;
+  // Do not hold the workspace allocation lock while an in-flight operation
+  // might be acquiring a new tab: that would deadlock its Session mutex.
+  await s.mutex.run(async()=>{});
+  return leaseMutex(s.workspace).run(()=>closeSessionOwned(s));
+}
+
+function heartbeatSession(sid){
+  const s=sessions.get(sid);
+  if(!s||s.closing)throw Error(`unknown session_id: ${sid} (missing or closing)`);
+  s.last_used_at=Date.now();
+  return {session_id:sid,alive:true,last_used_at:s.last_used_at};
 }
 
 async function workspaceOp(req){const h=makeHelpers({workspace:req.name||'Harness',targetId:'',targets:new Set(),attachments:new Map()});if(req.op==='workspace-create')return h.workspace_create(req.name,req.pool_size);if(req.op==='workspace-delete')return h.workspace_delete(req.name,req.force);throw Error(`unknown op: ${req.op}`)}
@@ -418,6 +498,7 @@ async function runPlatform(req) {
   const session=sessions.get(sid);
   if (!session) throw Error(`unknown session_id: ${sid}`);
   let result, cleanup;
+  session.inFlight++;
   try {
     result=await session.mutex.run(async()=>{
       const logs=[];
@@ -438,6 +519,7 @@ async function runPlatform(req) {
       }
     });
   } finally {
+    session.inFlight--;session.last_used_at=Date.now();
     cleanup=auto ? await stopSession(sid).catch(e=>({release_error:e.message})) : {caller_owned_session:true};
   }
   result.cleanup=cleanup;
@@ -451,7 +533,7 @@ async function runPlatform(req) {
     self_heal_capable:!auto,result};
 }
 
-export async function handle(req){switch(req.op){case'ping':return {ok:true,pid:process.pid,version:'1.0.1',queue_paused:process.env.WEBHELM_CHATGPT_QUEUE_PAUSED==='1',session_count:sessions.size,managed_chrome:managedChrome||{profile_dir:PROFILE_DIR, endpoint:process.env.WEBHELM_CDP_URL||'http://127.0.0.1:9222',reused:true}};case'list':return {session_count:sessions.size,sessions:[...sessions.values()].map(s=>({session_id:s.session_id,workspace:s.workspace,target_id:s.targetId,last_used_at:s.last_used_at}))};case'start':return createSession(req);case'exec':return execute(req);case'stop':return stopSession(req.session_id);case'stop-all':{const stopped=[];for(const id of [...sessions.keys()])stopped.push(await stopSession(id));return {stopped_count:stopped.length,error_count:0,stopped,errors:[]}}case'capacity':return workspaceCapacity(req);case'workspace-create':case'workspace-delete':return workspaceOp(req);case'chatgpt-new-turn-enqueue':return getChatGPTQueue().enqueue(req.config);case'platform-run':return runPlatform(req);default:throw Error(`unknown op: ${req.op}`)}}
+export async function handle(req){switch(req.op){case'ping':return {ok:true,pid:process.pid,version:'1.0.1',queue_paused:process.env.WEBHELM_CHATGPT_QUEUE_PAUSED==='1',session_count:sessions.size,managed_chrome:managedChrome||{profile_dir:PROFILE_DIR, endpoint:process.env.WEBHELM_CDP_URL||'http://127.0.0.1:9222',reused:true}};case'heartbeat':return heartbeatSession(req.session_id);case'list':return {session_count:sessions.size,sessions:[...sessions.values()].map(s=>({session_id:s.session_id,workspace:s.workspace,target_id:s.targetId,last_used_at:s.last_used_at}))};case'start':return createSession(req);case'exec':return execute(req);case'stop':return stopSession(req.session_id);case'stop-all':{const stopped=[];for(const id of [...sessions.keys()])stopped.push(await stopSession(id));return {stopped_count:stopped.length,error_count:0,stopped,errors:[]}}case'capacity':return workspaceCapacity(req);case'workspace-create':case'workspace-delete':return workspaceOp(req);case'chatgpt-new-turn-enqueue':return getChatGPTQueue().enqueue(req.config);case'platform-run':return runPlatform(req);default:throw Error(`unknown op: ${req.op}`)}}
 function serve(conn) {
   let buffer = '';
   conn.setEncoding('utf8');

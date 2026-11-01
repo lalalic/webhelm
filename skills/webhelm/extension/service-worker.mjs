@@ -1,10 +1,8 @@
 import { WorkspaceManager } from "./workspace-manager.mjs";
 
 const manager = new WorkspaceManager(chrome);
-const RECLAIM_ALARM = "browser-workspace.reclaim-stale";
 const closingWindowIds = new Set();
 
-chrome.alarms.create(RECLAIM_ALARM, { periodInMinutes: 5 });
 
 manager.restoreConfiguredWorkspaces().catch((error) => {
   console.warn("Browser Workspace failed to restore configured workspaces", error);
@@ -118,9 +116,4 @@ chrome.tabGroups.onRemoved.addListener((group) => {
   }, 100);
 });
 
-chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name !== RECLAIM_ALARM) return;
-  manager.reclaimStaleTabs().catch((error) => {
-    console.warn("Browser Workspace failed to reclaim stale tabs", error);
-  });
 });

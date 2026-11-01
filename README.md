@@ -24,6 +24,7 @@ npx --yes webhelm@latest session exec SESSION_ID <<'JS'
 console.log(await snapshot());
 JS
 npx --yes webhelm@latest session stop SESSION_ID
+# Long-running worker managers: session heartbeat SESSION_ID every 60 seconds
 ```
 
 Use `npx skills add lalalic/webhelm --skill webhelm` to install agent guidance and the bundled Extension source. The Skill lives **in this repo** at `skills/webhelm/SKILL.md`.
@@ -32,7 +33,7 @@ The Actions checkout is `~/.local/webhelm`, with site modules at `~/.local/webhe
 
 ## Architecture and compatibility
 
-The Runtime stores its managed Chrome profile, persistent FIFO queue, and IPC socket under `~/.config/webhelm/`. Run `webhelm migrate` with the legacy daemon and Chrome stopped to migrate existing `~/.config/browser-workspace/` data without dropping logins or queued turns. The command leaves a compatibility symlink for legacy maintenance scripts. Only one daemon is permitted to own the queue. A CLI package update does not kill a running daemon or close another agent's tabs; upgrade daemons when idle.
+The Runtime stores its managed Chrome profile, persistent FIFO queue, and IPC socket under `~/.config/webhelm/`. Run `webhelm migrate` with the legacy daemon and Chrome stopped to migrate existing `~/.config/browser-workspace/` data without dropping logins or queued turns. The command leaves a compatibility symlink for legacy maintenance scripts. Session idle GC runs on Node before new Session allocation (5 minutes without operations or explicit heartbeat). Managed tabs are navigated back to their Extension idle URL instead of closing CDP targets; the Extension does not use `tab.lastAccessed` GC. Only one daemon is permitted to own the queue. A CLI package update does not kill a running daemon or close another agent's tabs; upgrade daemons when idle.
 
 NeoY and Relay can continue using `webhelm` session commands, `result.stdout` JSON receipts, and `admin_helper` returned by `status`. An `admin_helper` inside the installed Skill is a stable connector to the same Node IPC socket. `webhelm capacity` replaces the legacy Python capacity probe.
 

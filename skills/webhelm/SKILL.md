@@ -39,7 +39,10 @@ console.log((await snapshot()).slice(0,1800));
 await click('[data-ref="e2"]');
 JS
 webhelm session stop SESSION_ID
+# Long-running workers must use webhelm session heartbeat SESSION_ID every 60 seconds.
 ```
+
+Node reclaims Sessions idle for 5 minutes during new Session allocation; normal `session exec` refreshes activity, and long-running Worker Managers must send `webhelm session heartbeat SESSION_ID` at least every 60 seconds while waiting for a model. On `session stop`, Node returns managed tabs to the Extension idle URL without closing the underlying CDP target. The Extension no longer independently reclaims tabs using Chrome `lastAccessed`.
 
 The JavaScript Session context persists across `exec` calls. Helpers are asynchronous: `snapshot`, `page_info`, `goto_url`, `wait_for_load`, `wait_for_element`, `fill_input`, `click`, `js`, `cdp`, `new_tab`, `current_tab`, `list_tabs`, `switch_tab`, `close_tab`, `upload_file`, `type_text`, `capture_screenshot`, `wait`, `workspace_status`. Use `new_tab` rather than raw CDP target creation to preserve Tab Group ownership. Browser helper references are established by `snapshot`; refresh after navigation.
 
