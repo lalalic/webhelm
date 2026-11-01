@@ -9,4 +9,4 @@ while [ -L "$SOURCE" ]; do
 done
 SKILL_DIR=$(CDPATH= cd -- "$(dirname -- "$SOURCE")/.." && pwd -P)
 export WEBHELM_ADMIN_HELPER="${WEBHELM_ADMIN_HELPER:-$SKILL_DIR/scripts/admin.mjs}"
-exec npx --yes webhelm@latest "$@"
+exec npm exec --yes --package=webhelm@latest -- webhelm "$@"

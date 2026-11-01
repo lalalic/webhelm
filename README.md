@@ -9,7 +9,7 @@
 | [`lalalic/webhelm`](https://github.com/lalalic/webhelm) | npm Runtime/CLI, Skill (`skills/webhelm`), Chrome Extension, tests | npm `webhelm@latest`; Skill source separately |
 | [`lalalic/webhelm-actions`](https://github.com/lalalic/webhelm-actions) | Site manifests, ChatGPT/Z.ai/DeepSeek/XHS/etc. Actions | Git checkout at `~/.local/webhelm` |
 
-The npm package **does not include** the Skill or site Actions. The Skill's executable is a small `npx --yes webhelm@latest` launcher; its contents may update without a Runtime release.
+The npm package **does not include** the Skill or site Actions. The Skill's executable uses `npm exec --yes --package=webhelm@latest -- webhelm` to avoid inherited npm lifecycle variable conflicts; its contents may update without a Runtime release.
 
 ## Install and use
 

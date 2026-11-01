@@ -23,7 +23,7 @@ webhelm status
 webhelm capacity
 ```
 
-The shortcut invokes **`npx --yes webhelm@latest`** on every call. Direct use of `npx --yes webhelm@latest` is equivalent. Node.js 22.5+ and npm are required. `setup` clones `https://github.com/lalalic/webhelm-actions` into `~/.local/webhelm` (unless already checked out) and connects to the existing managed Chrome. The Actions live at `~/.local/webhelm/platforms`, not inside this Skill or npm's cache. An existing checkout with local edits is never deleted or overwritten.
+The shortcut invokes **`npm exec --yes --package=webhelm@latest -- webhelm`** on every call. `npx --yes webhelm@latest` is equivalent in a normal shell, but can fail when `npm_config_package` is inherited from an npm worker. In those workers, use the stable shortcut or explicit `npm exec` form. Node.js 22.5+ and npm are required. `setup` clones `https://github.com/lalalic/webhelm-actions` into `~/.local/webhelm` (unless already checked out) and connects to the existing managed Chrome. The Actions live at `~/.local/webhelm/platforms`, not inside this Skill or npm's cache. An existing checkout with local edits is never deleted or overwritten.
 
 Do not install or launch the old Python Browser Harness, Browser Workspace daemon, or separate browser Runtime from this Skill. The Node daemon reuses the existing Chrome profile and Session IPC socket, and never restarts Chrome to update npm code. Existing Sessions and the durable SQLite ChatGPT FIFO must complete safely before a daemon version is changed. **`@latest` applies to new CLI invocations, not a hot swap of a running daemon.**
 
