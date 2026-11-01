@@ -91,6 +91,24 @@ async function lockOwnership(fn) {
   try {return await fn();}
   finally {fs.closeSync(fd);try {fs.unlinkSync(LOCK);}catch{}}
 }
+export function chromeMajorFromVersion(versionText){
+  const match=String(versionText).match(/(?:Chrome|Chromium)\s+(?:for Testing\s+)?(\d+)\./);
+  const major=match?Number(match[1]):NaN;
+  if(!Number.isSafeInteger(major)||major<50)throw Error(`Cannot determine managed Chrome version: ${versionText}`);
+  return major;
+}
+function chromeMajor(chromePath){
+  return chromeMajorFromVersion(execFileSync(chromePath,['--version'],{encoding:'utf8',timeout:5000}).trim());
+}
+export function chromeLaunchArgs(profile,port,extensionPath,major){
+  const args=[`--user-data-dir=${profile}`,`--remote-debugging-port=${port}`];
+  // Chrome 138 can load unpacked extensions with a compatibility flag.
+  // Chrome 139+ must rely on Extensions.loadUnpacked through CDP instead:
+  // passing --load-extension can leave a stale, non-running extension entry.
+  if(major<=138)args.push('--disable-features=DisableLoadExtensionCommandLineSwitch',`--load-extension=${extensionPath}`);
+  args.push('--no-first-run','--no-default-browser-check','about:blank');
+  return args;
+}
 export async function ensureManagedChrome(){
   // Explicit CDP endpoints also support hermetic mock-browser tests.
   const specified=process.env.WEBHELM_CDP_URL;
@@ -107,10 +125,7 @@ export async function ensureManagedChrome(){
     const extension=stageExtension();
     const log=fs.openSync(path.join(ROOT,'managed-chrome.log'),'a');
     fs.mkdirSync(PROFILE,{recursive:true});
-    const child=spawn(chrome,[`--user-data-dir=${PROFILE}`,`--remote-debugging-port=${port}`,
-      '--disable-features=DisableLoadExtensionCommandLineSwitch',
-      `--load-extension=${extension.path}`,
-      '--no-first-run','--no-default-browser-check','about:blank'],
+    const child=spawn(chrome,chromeLaunchArgs(PROFILE,port,extension.path,chromeMajor(chrome)),
       {detached:true,stdio:['ignore',log,log]});
     child.unref();
     fs.closeSync(log);

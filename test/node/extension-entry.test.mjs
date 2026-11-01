@@ -6,6 +6,7 @@ import path from 'node:path';
 import os from 'node:os';
 import {fileURLToPath} from 'node:url';
 import {stageExtension,extensionVersion,EXTENSION_HOME,EXTENSION_ID,ensureExtensionLoaded} from '../../runtime/extension-manager.mjs';
+import {chromeMajorFromVersion,chromeLaunchArgs} from '../../runtime/chrome.mjs';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const source=path.join(root,'runtime/extension');
 
@@ -69,4 +70,17 @@ test('Chrome 138 uses launch flags; incorrect running extension is rejected',asy
     return {};
   };
   await assert.rejects(ensureExtensionLoaded(b,{extensionDir}),/Chrome has extension 0.3.1/);
+});
+
+test('Chrome 138 uses startup compatibility flags, Chrome 156 uses CDP only',()=>{
+  const flags=chromeLaunchArgs('/profile',9222,'/local/extension',chromeMajorFromVersion('Google Chrome 138.0.7204.183'));
+  assert.ok(flags.includes('--load-extension=/local/extension'));
+  assert.ok(flags.includes('--disable-features=DisableLoadExtensionCommandLineSwitch'));
+  const modern=chromeLaunchArgs('/profile',9222,'/local/extension',chromeMajorFromVersion('Google Chrome 156.0.8078.80'));
+  assert.ok(!modern.some(a=>a.startsWith('--load-extension=')));
+  assert.ok(!modern.some(a=>a.includes('DisableLoadExtensionCommandLineSwitch')));
+  assert.ok(modern.includes('--user-data-dir=/profile'));
+  assert.ok(modern.includes('--remote-debugging-port=9222'));
+  assert.equal(chromeMajorFromVersion('Google Chrome for Testing 138.0.7204.183'),138);
+  assert.throws(()=>chromeMajorFromVersion('unknown browser'),/Cannot determine/);
 });
