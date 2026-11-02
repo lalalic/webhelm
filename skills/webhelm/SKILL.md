@@ -5,7 +5,7 @@ description: Use when a task needs real Google Chrome browser control (websites,
 
 # WebHelm
 
-Use WebHelm to work in the user's managed Chrome, including already signed-in sites. Prefer an installed platform Action for supported site operations; use a browser Session for inspection or actions not covered by a platform Action. **CLI `--help` is authoritative** for syntax and options; do not guess flags.
+Use WebHelm to work in the user's managed Chrome, including already signed-in sites. Choose an installed platform Action when it supports the user goal; otherwise use a browser Session. Do not create a Session just because a platform exists. **CLI `--help` is authoritative** for syntax and options; do not guess flags.
 
 ## Initial setup (one time)
 
@@ -21,21 +21,20 @@ Skip setup when already configured. If managed Chrome needs recovery, run `webhe
 
 ## Sessions: always start and stop as a pair
 
-`session start` returns a `session_id`. Reuse **that exact ID** for every `exec` and stop it in a `finally`/cleanup step, including after errors. Never stop unrelated Sessions.
+`session start` returns a `session_id`. Reuse **that exact ID** for every `exec` and stop it in a cleanup step, including after errors. Run the following as one shell script. Never stop unrelated Sessions.
 
 ```sh
-webhelm session start --url https://example.com   # copy session_id from JSON
-webhelm session exec SESSION_ID <<'JS'
-const info = await page_info();
-console.log(info);
-const tree = await snapshot();
-console.log(tree.slice(0, 1800));
-// After inspecting the page, e.g. await click('a[href="/about"]');
+set -eu
+SESSION_ID=$(webhelm session start --url https://example.com | node -p 'JSON.parse(require("fs").readFileSync(0,"utf8")).session_id')
+trap 'webhelm session stop "$SESSION_ID" >/dev/null' EXIT
+webhelm session exec "$SESSION_ID" <<'JS'
+console.log(await snapshot());      // Inspect before interacting
+await click('a');                   // Example Domain's information link
+console.log((await page_info()).url);
 JS
-webhelm session stop SESSION_ID                 # always release your Session
 ```
 
-The Session's JavaScript context persists between `exec` calls. Browser helpers include:
+The shell trap releases your Session even if `exec` fails. The Session's JavaScript context persists between `exec` calls. Browser helpers include:
 
 - **Inspect/navigation:** `snapshot`, `page_info`, `goto_url`, `wait_for_load`, `wait_for_element`.
 - **Interact:** `click`, `fill_input`, `type_text`, `upload_file`, `js`, `cdp`.
@@ -49,10 +48,10 @@ Helpers are asynchronous; use `await`. Obtain element references from `snapshot(
 webhelm platform list
 webhelm platform profile PLATFORM
 webhelm platform source PLATFORM ACTION
-webhelm platform run PLATFORM ACTION --session-id SESSION_ID --config /path/to/input.json
+webhelm platform run --help  # choose the required mode and Session options first
 ```
 
-Read only the references relevant to the task:
+Use the exact platform identifier returned by `platform list`, not a guessed name or site nickname. Read only the references relevant to the task:
 
 | Need | Reference |
 | --- | --- |
@@ -60,7 +59,7 @@ Read only the references relevant to the task:
 | Site-specific Actions, accepted fields, expected behavior | `webhelm platform profile PLATFORM`, `webhelm platform source PLATFORM ACTION`, and the relevant `~/.local/webhelm/platforms/PLATFORM/{manifest.yaml,README.md}` |
 | **New site/platform or broken Action** | After setup, read `~/.local/webhelm/platforms/NEW_PLATFORM.md`; follow it to create or repair Actions in the separate Actions checkout, not inside this Skill |
 
-Use `--auto-session` only for independent one-shot Actions. When creating a new platform, start with a read-only Action, test it in an owned Session, and publish only reviewed changes using the Action guide.
+Use `--session-id` for Actions requiring a caller-owned Session, `--auto-session` for supported one-shot Actions, or no Session argument when the Action explicitly supports that mode. Read the Action profile and `platform run --help` before choosing. For new platforms, start with read-only Actions, test in an owned Session, and publish reviewed changes using the Action guide.
 
 ## Safety
 

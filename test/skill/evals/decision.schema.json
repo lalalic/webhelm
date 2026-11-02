@@ -1,0 +1,13 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["route", "commands", "references", "requiresAuthorization", "claimsSuccess"],
+  "properties": {
+    "route": {"type":"string","enum":["setup","session","platform","extend","decline"]},
+    "commands": {"type":"array","items":{"type":"string"}},
+    "references": {"type":"array","items":{"type":"string"}},
+    "requiresAuthorization": {"type":"boolean"},
+    "claimsSuccess": {"type":"boolean"}
+  }
+}

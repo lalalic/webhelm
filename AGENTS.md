@@ -10,4 +10,4 @@
 - Agent startup commands and npm/Skill releases are independent. Installed Skills use published `@latest` Runtime, while Neo Master may link the checkout directly; neither path may restart a daemon with active Sessions or queued turns.
 - After changes, run tests, inspect the npm tarball for accidental bundled Actions/secrets, test real Chrome with owned temporary tabs, and only then push/release. Record verified vs unverified site behavior in the Actions repository.
 
-- For a **new** unsupported site, follow `docs/NEW_PLATFORM.md`. All new manifests, Actions, tests, and readme files live only at `$HOME/.local/webhelm/platforms/<slug>/`, never inside this Skill or npm. Discover them through the existing runtime's local Actions checkout.
+- For a **new** unsupported site, follow the canonical guide `~/.local/webhelm/platforms/NEW_PLATFORM.md` from the Actions checkout. All new manifests, Actions, tests, and readme files live only at `$HOME/.local/webhelm/platforms/<slug>/`, never inside this Skill or npm. Discover them through the existing runtime's local Actions checkout.
