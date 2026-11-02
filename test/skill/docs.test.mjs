@@ -16,7 +16,9 @@ test('WebHelm Skill is a concise browser-use interface, not a maintenance guide'
   assert.match(text,/description:.*Chrome.*platform Actions/i);
   assert.match(text,/Initial setup.*webhelm setup/s);
   assert.match(text,/webhelm session start.*trap .*webhelm session stop "\$SESSION_ID"/s);
-  assert.match(text,/snapshot.*click.*page_info/s);
+  assert.match(text,/page_info.*snapshot.*click/s);
+  assert.match(text,/without `--url` opens `about:blank`/);
+  assert.match(text,/Before using a Session, plan \*\*all three commands\*\*/);
   assert.match(text,/platform profile PLATFORM/);
   assert.match(text,/platforms\/NEW_PLATFORM\.md/);
   assert.match(text,/relevant to the task/);

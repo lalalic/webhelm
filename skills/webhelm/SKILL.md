@@ -21,16 +21,15 @@ Skip setup when already configured. If managed Chrome needs recovery, run `webhe
 
 ## Sessions: always start and stop as a pair
 
-`session start` returns a `session_id`. Reuse **that exact ID** for every `exec` and stop it in a cleanup step, including after errors. Run the following as one shell script. Never stop unrelated Sessions.
+Before using a Session, plan **all three commands**: `webhelm session start --url URL` → `webhelm session exec SESSION_ID` → `webhelm session stop SESSION_ID`. Stop only the Session you started, even on failure; never leave cleanup implicit. `session start` without `--url` opens `about:blank`—it cannot attach to arbitrary existing tabs. If the website is unspecified, obtain its URL before starting. Run this example as one shell script:
 
 ```sh
 set -eu
 SESSION_ID=$(webhelm session start --url https://example.com | node -p 'JSON.parse(require("fs").readFileSync(0,"utf8")).session_id')
 trap 'webhelm session stop "$SESSION_ID" >/dev/null' EXIT
 webhelm session exec "$SESSION_ID" <<'JS'
-console.log(await snapshot());      // Inspect before interacting
-await click('a');                   // Example Domain's information link
-console.log((await page_info()).url);
+console.log(await page_info()); // Read-only title and URL
+console.log(await snapshot());  // Page structure; use await click('a') only if needed
 JS
 ```
 

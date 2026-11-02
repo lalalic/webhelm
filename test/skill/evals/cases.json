@@ -1,7 +1,7 @@
 [
   {
     "id": "inspect-signed-in-tab",
-    "goal": "Inspect the title and link of a signed-in website in my managed Chrome. Do not change the site.",
+    "goal": "In my managed Chrome I am signed in to GitHub at https://github.com/notifications. Inspect that page title and URL without making any changes.",
     "expectedRoute": "session",
     "requiredCommands": [
       "webhelm session start",
