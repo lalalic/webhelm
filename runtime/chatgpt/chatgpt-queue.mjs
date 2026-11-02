@@ -1,9 +1,10 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { classifyProbe, PROBE_JS, targetUrl } from "./chatgpt-probe.mjs";
 import { CLICK_SEND_JS, SEND_ENABLED_JS } from "./lifecycle-common.mjs";
+import { DurableQueueCore } from "../durable-queue-core.mjs";
 
 const transitions = new Set([
   "CHECKING>WAITING",
@@ -15,15 +16,7 @@ const transitions = new Set([
   "UNCERTAIN>WAITING",
   "BLOCKED>WAITING",
 ]);
-const ACTIVE = [
-  "QUEUED",
-  "CHECKING",
-  "WAITING",
-  "SENDING",
-  "UNCERTAIN",
-  "BLOCKED",
-];
-export class ChatGPTQueue {
+export class ChatGPTQueue extends DurableQueueCore {
   constructor(
     {
       persistenceRoot,
@@ -49,21 +42,25 @@ export class ChatGPTQueue {
         throw new TypeError(`${name} callback is required`);
       }
     }
-    this.root = resolve(persistenceRoot);
-    mkdirSync(this.root, { recursive: true });
-    this.dbPath = join(this.root, "chatgpt-new-turn.sqlite3");
-    this.db = new DatabaseSync(this.dbPath);
-    this.db.exec(
+    const root = resolve(persistenceRoot);
+    mkdirSync(root, { recursive: true });
+    const dbPath = join(root, "chatgpt-new-turn.sqlite3");
+    const db = new DatabaseSync(dbPath);
+    db.exec(
       "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000",
     );
-    this.db.exec(
+    db.exec(
       `CREATE TABLE IF NOT EXISTS turns(seq INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT NOT NULL UNIQUE,idem_key TEXT NOT NULL UNIQUE,project_id TEXT,thread_id TEXT NOT NULL,message TEXT NOT NULL,state TEXT NOT NULL,lease_owner TEXT,lease_until REAL,next_check_at REAL NOT NULL,created_at REAL NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,receipt TEXT,mergeable INTEGER NOT NULL DEFAULT 0); CREATE INDEX IF NOT EXISTS turns_thread_order ON turns(thread_id,seq); CREATE TABLE IF NOT EXISTS merged_requests(idem_key TEXT PRIMARY KEY,project_id TEXT,thread_id TEXT NOT NULL,message TEXT NOT NULL,queue_id TEXT NOT NULL);`,
     );
+    super(db, now);
+    this.root = root;
+    this.dbPath = dbPath;
+    this.db = db;
     this.startSession = startSession;
     this.execSession = execSession;
     this.stopSession = stopSession;
     this.intervalMs = intervalMs;
-    this.concurrency = concurrency;
+    this.concurrency = Math.min(4, Math.max(1, Number(concurrency) || 4));
     this.leaseSeconds = leaseSeconds;
     this.now = now;
     this.logger = logger;
@@ -73,131 +70,13 @@ export class ChatGPTQueue {
     this.closed = false;
     this.wakeTimer = null;
   }
-  _transaction(fn) {
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
-      const v = fn();
-      this.db.exec("COMMIT");
-      return v;
-    } catch (e) {
-      this.db.exec("ROLLBACK");
-      throw e;
-    }
-  }
-  _one(sql, ...args) {
-    return this.db.prepare(sql).get(...args) || null;
-  }
-  _rows() {
-    return this.db.prepare("SELECT * FROM turns ORDER BY seq").all();
-  }
-  enqueue(
-    {
-      thread_id,
-      message,
-      idempotency_key,
-      idempotencyKey,
-      project_id = null,
-      mergeable = false,
-    } = {},
-  ) {
-    const key = idempotency_key ?? idempotencyKey;
-    if (!thread_id || !message || !key) {
-      throw new TypeError("thread_id, message, idempotency_key required");
-    }
-    if (typeof mergeable !== "boolean") {
-      throw new TypeError("mergeable must be a boolean");
-    }
-    const now = this.now();
-    const row = this._transaction(() => {
-      const merged = this._one(
-        "SELECT * FROM merged_requests WHERE idem_key=?",
-        key,
-      );
-      if (merged) {
-        if (
-          merged.thread_id !== thread_id || merged.message !== message ||
-          merged.project_id !== project_id
-        ) throw new Error("idempotency key reused with different payload");
-        return this._one("SELECT * FROM turns WHERE id=?", merged.queue_id);
-      }
-      const same = this._one("SELECT * FROM turns WHERE idem_key=?", key);
-      if (same) {
-        if (
-          same.thread_id !== thread_id || same.message !== message ||
-          same.project_id !== project_id
-        ) throw new Error("idempotency key reused with different payload");
-        return same;
-      }
-      const tail = mergeable
-        ? this._one(
-          "SELECT * FROM turns WHERE thread_id=? ORDER BY seq DESC LIMIT 1",
-          thread_id,
-        )
-        : null;
-      if (
-        tail && tail.mergeable && tail.project_id === project_id &&
-        ["QUEUED", "WAITING"].includes(tail.state)
-      ) {
-        this.db.prepare(
-          "INSERT OR IGNORE INTO merged_requests VALUES(?,?,?,?,?)",
-        ).run(tail.idem_key, tail.project_id, thread_id, tail.message, tail.id);
-        this.db.prepare("INSERT INTO merged_requests VALUES(?,?,?,?,?)").run(
-          key,
-          project_id,
-          thread_id,
-          message,
-          tail.id,
-        );
-        this.db.prepare("UPDATE turns SET message=message || ? WHERE id=?").run(
-          "\n" + message,
-          tail.id,
-        );
-        return this._one("SELECT * FROM turns WHERE id=?", tail.id);
-      }
-      const id = randomUUID();
-      this.db.prepare(
-        "INSERT INTO turns(id,idem_key,project_id,thread_id,message,state,next_check_at,created_at,mergeable) VALUES(?,?,?,?,? ,'QUEUED',?,?,?)",
-      ).run(
-        id,
-        key,
-        project_id,
-        thread_id,
-        message,
-        now,
-        now,
-        mergeable ? 1 : 0,
-      );
-      return this._one("SELECT * FROM turns WHERE id=?", id);
-    });
+  enqueue(request) {
+    const result = super.enqueue(request);
+    const row = this._one("SELECT * FROM turns WHERE id=?", result.queue_id);
     if (this.started) this._wake(0);
-    return {
-      ok: true,
-      status: "queued",
-      queue_id: row.id,
-      thread_id: row.thread_id,
-      state: row.state,
-    };
+    return {...result, thread_id:row.thread_id, state:row.state};
   }
-  claim(owner, now = this.now()) {
-    return this._transaction(() => {
-      this.db.prepare(
-        "UPDATE turns SET state='UNCERTAIN',lease_owner=NULL,lease_until=NULL WHERE state='SENDING' AND lease_until<=?",
-      ).run(now);
-      this.db.prepare(
-        "UPDATE turns SET state='WAITING',lease_owner=NULL,lease_until=NULL,next_check_at=? WHERE state='CHECKING' AND lease_until<=?",
-      ).run(now, now);
-      const row = this._one(
-        `SELECT t.* FROM turns t WHERE t.state IN ('QUEUED','WAITING') AND t.next_check_at<=? AND NOT EXISTS(SELECT 1 FROM turns older WHERE older.thread_id=t.thread_id AND older.seq<t.seq AND (older.state NOT IN ('SENT','CANCELLED') OR (older.state='SENT' AND older.next_check_at>?))) ORDER BY t.seq LIMIT 1`,
-        now,
-        now,
-      );
-      if (!row) return null;
-      this.db.prepare(
-        "UPDATE turns SET state='CHECKING',lease_owner=?,lease_until=?,attempts=attempts+1 WHERE id=?",
-      ).run(owner, now + this.leaseSeconds, row.id);
-      return this._one("SELECT * FROM turns WHERE id=?", row.id);
-    });
-  }
+  claim(owner, now = this.now()) { return super.claim(owner, now, this.leaseSeconds); }
   transition(
     id,
     owner,
@@ -238,24 +117,7 @@ export class ChatGPTQueue {
       );
     });
   }
-  rows() {
-    return this._rows();
-  }
-  inspect() {
-    return {
-      ok: true,
-      items: this.rows().filter((r) => !["SENT", "CANCELLED"].includes(r.state))
-        .map(({ id, thread_id, state, attempts, created_at, receipt }) => ({
-          id,
-          queue_id: id,
-          thread_id,
-          state,
-          attempts,
-          created_at,
-          receipt,
-        })),
-    };
-  }
+  inspect() { return this.list(); }
   reconcile({ queue_id, evidence, accepted } = {}) {
     if (!queue_id || !evidence || typeof accepted !== "boolean") {
       throw new TypeError("queue_id, evidence and boolean accepted required");

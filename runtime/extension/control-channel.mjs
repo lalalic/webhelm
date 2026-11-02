@@ -53,6 +53,7 @@ export class ControlChannel {
       sessions: connected ? state.daemon.sessions || [] : [],
       request: state.request || null,
       lastResult: state.lastResult || null,
+      queue: state.queue || [],
     };
   }
 
@@ -77,16 +78,31 @@ export class ControlChannel {
     });
   }
 
-  async heartbeat(sessions) {
+  async requestQueueCancel(queueId) {
+    return this.serialize(async () => {
+      if (typeof queueId !== 'string' || !queueId) throw new Error('Queue item is required');
+      const state = this.normalize(await this.read());
+      if (state.request) throw new Error('Another WebHelm operation is already running');
+      if (!Number.isFinite(state.daemon?.seenAt) || this.now() - state.daemon.seenAt >= FRESH_MS)
+        throw new Error('WebHelm daemon is not responding');
+      if (!(state.queue || []).some(item => item.id === queueId && item.state === 'QUEUED'))
+        throw new Error('Queue item is no longer cancellable');
+      const request = {id:this.makeId(), action:'queue-cancel', queueId, state:'pending', createdAt:this.now()};
+      await this.save({...state, request, lastResult:null});
+      return {id:request.id,state:'pending'};
+    });
+  }
+
+  async heartbeat(sessions, queue = []) {
     return this.serialize(async()=>{
       if (!Array.isArray(sessions)) throw new Error('Invalid sessions');
       const state=this.normalize(await this.read());
-      await this.save({...state,daemon:{seenAt:this.now(),sessions}});
+      await this.save({...state,daemon:{seenAt:this.now(),sessions},queue});
       return {updated:true};
     });
   }
 
-  async poll(sessions) {
+  async poll(sessions, queue = []) {
     return this.serialize(async () => {
       if (!Array.isArray(sessions) || sessions.some(s =>
         typeof s?.session_id !== 'string' || typeof s?.workspace !== 'string'))
@@ -95,10 +111,10 @@ export class ControlChannel {
       const request = state.request?.state === 'pending'
         ? {...state.request, state: 'processing'}
         : state.request || null;
-      await this.save({...state, request, daemon: {seenAt: this.now(), sessions}});
+      await this.save({...state, request, daemon: {seenAt: this.now(), sessions}, queue});
       return request?.state === 'processing' && state.request?.state === 'pending'
         ? {id: request.id, action: request.action, ...(request.sessionId ? {sessionId:request.sessionId} : {}),
-          ...(request.workspace ? {workspace:request.workspace} : {})}
+          ...(request.workspace ? {workspace:request.workspace} : {}), ...(request.queueId ? {queueId:request.queueId} : {})}
         : null;
     });
   }
@@ -111,7 +127,7 @@ export class ControlChannel {
       const errors = response?.errors || [];
       const errorText = response?.error || errors.map(e => e.error || String(e)).join('; ');
       const lastResult = response?.ok
-        ? {id, ok: errors.length === 0, stoppedCount, errors, ...(errors.length ? {error: errorText} : {})}
+        ? {id, ok: errors.length === 0, stoppedCount, errors, ...(response.queue_id ? {queue_id:response.queue_id,state:response.state} : {}), ...(errors.length ? {error: errorText} : {})}
         : {id, ok: false, stoppedCount, errors, error: String(errorText || 'Unable to stop sessions')};
       await this.save({...state, request: null, lastResult});
       return lastResult;

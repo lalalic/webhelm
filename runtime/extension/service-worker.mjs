@@ -61,6 +61,8 @@ async function controlRpc(method, args) {
     }
     case "workspace.control.requestStop":
       return control.requestStop(args.action, args.sessionId, args.workspace);
+    case "workspace.control.queueCancel":
+      return control.requestQueueCancel(args.queueId);
     case "workspace.control.heartbeat":
       return control.heartbeat(args.sessions);
     case "workspace.control.poll": {
@@ -112,7 +114,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
   if (request?.method?.startsWith("workspace.control.") &&
       (sender?.url !== chrome.runtime.getURL("popup.html") ||
-        !["workspace.control.requestStop", "workspace.control.status"].includes(request.method))) {
+        !["workspace.control.requestStop", "workspace.control.queueCancel", "workspace.control.status"].includes(request.method))) {
     sendResponse({ok:false,error:{message:"WebHelm control actions require the toolbar popup"}});
     return false;
   }

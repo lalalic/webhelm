@@ -14,6 +14,8 @@ Commands:
   webhelm status                           Report browser and daemon status (JSON)
   webhelm ensure                           Check and recover managed Chrome health
   webhelm capacity                         Report available browser capacity (JSON)
+  webhelm queue list                       List active ChatGPT new-turn queue items
+  webhelm queue cancel QUEUE_ID             Cancel an item that is still queued
   webhelm session start [--url URL]        Start a persistent browser Session
   webhelm session list                    List CLI-owned Sessions
   webhelm session exec ID [--code-file F]  Run JavaScript in a Session
@@ -87,6 +89,15 @@ Output: JSON capacity information.
 
 Example:
   webhelm capacity`,
+  queue: `webhelm queue — inspect or cancel ChatGPT new-turn queue items
+
+Usage:
+  webhelm queue list
+  webhelm queue cancel QUEUE_ID
+
+Cancellation succeeds only while an item remains QUEUED. Items already being
+checked, sent, or awaiting reconciliation cannot be cancelled.
+Output: JSON queue state or cancellation receipt.`,
   migrate: `webhelm migrate — migrate supported legacy local browser data
 
 Usage:

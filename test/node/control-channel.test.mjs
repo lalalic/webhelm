@@ -120,3 +120,15 @@ test('abandoned processing action reports uncertainty without replay',async()=>{
   assert.match(status.lastResult.error,/did not confirm completion/);
   assert.equal((await channel.complete(command.id,{ok:true})).ignored,true);
 });
+
+test('queue state relays through control storage and cancellation is limited to fresh queued entries',async()=>{
+  const {channel}=build();
+  const queued=[{id:'queued-1',thread_id:'thread-1',state:'QUEUED',attempts:0}];
+  await channel.poll(sessions,queued);
+  assert.deepEqual((await channel.status()).queue,queued);
+  const command=await channel.requestQueueCancel('queued-1');
+  assert.deepEqual(await channel.poll(sessions,queued),{id:command.id,action:'queue-cancel',queueId:'queued-1'});
+  await channel.complete(command.id,{ok:true,queue_id:'queued-1',state:'CANCELLED'});
+  await channel.poll(sessions,[{...queued[0],state:'CHECKING'}]);
+  await assert.rejects(channel.requestQueueCancel('queued-1'),/no longer cancellable/);
+});

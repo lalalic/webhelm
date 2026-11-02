@@ -621,13 +621,13 @@ async function pollExtensionControl() {
   if (controlPollActive || shuttingDown) return;
   controlPollActive = true;
   try {
-    const pendingAction = await extensionCall(null,'workspace.control.poll',{sessions:visibleSessions()});
+    const pendingAction = await extensionCall(null,'workspace.control.poll',{sessions:visibleSessions(),queue:getChatGPTQueue().list().items});
     if (!pendingAction) return;
     const {id,action,sessionId} = pendingAction;
     // Keep the status panel fresh while a lengthy Session stop waits for
     // browser navigation or an in-flight task.
     const controlHeartbeat=setInterval(()=>{
-      extensionCall(null,'workspace.control.heartbeat',{sessions:visibleSessions()})
+      extensionCall(null,'workspace.control.heartbeat',{sessions:visibleSessions(),queue:getChatGPTQueue().list().items})
         .catch(error=>console.warn(`WebHelm control heartbeat: ${error.message}`));
     },3000);
     let response;
@@ -638,6 +638,8 @@ async function pollExtensionControl() {
         response = await stopWorkspaceSessions(pendingAction.workspace);
       } else if (action === 'stop') {
         response = {ok:true,stopped:await stopSession(sessionId)};
+      } else if (action === 'queue-cancel') {
+        response = getChatGPTQueue().cancel(pendingAction.queueId);
       } else {
         throw Error('Unknown extension control action');
       }
@@ -647,7 +649,7 @@ async function pollExtensionControl() {
       clearInterval(controlHeartbeat);
     }
     await extensionCall(null,'workspace.control.complete',{id,response});
-    await extensionCall(null,'workspace.control.poll',{sessions:visibleSessions()});
+    await extensionCall(null,'workspace.control.poll',{sessions:visibleSessions(),queue:getChatGPTQueue().list().items});
   } catch(error) {
     console.warn(`WebHelm extension control sync failed: ${error.message}`);
   } finally {
@@ -684,11 +686,6 @@ async function runPlatform(req) {
       if(session.poisoned||session.closing)throw Error('Session expired while waiting for platform action');
       const logs=[];
       const helpers=makeHelpers(session);
-      helpers.enqueueChatGPTTurn=request=>{
-        if(session.poisoned||session.closing)throw Error('Session execution expired or closing');
-        return getChatGPTQueue().enqueue(request);
-      };
-      helpers.chatgptQueue={enqueue:helpers.enqueueChatGPTTurn};
       try {
         const actionTimeoutMs=Math.max(50,Math.min(300000,Number(process.env.WEBHELM_PLATFORM_TIMEOUT_MS)||180000));
         const value=await withinDeadline(Promise.resolve().then(()=>invokePlatformAction(platform,action,{
@@ -719,7 +716,7 @@ async function runPlatform(req) {
     self_heal_capable:!auto,result};
 }
 
-export async function handle(req){switch(req.op){case'ping':return {ok:true,pid:process.pid,version:PACKAGE_VERSION,queue_paused:process.env.WEBHELM_CHATGPT_QUEUE_PAUSED==='1',session_count:sessions.size,managed_chrome:managedChrome||{profile_dir:PROFILE_DIR, endpoint:process.env.WEBHELM_CDP_URL||'http://127.0.0.1:9222',reused:true},chrome_guard:managedChromeGuard.status()};case'guard-check':{let status=await managedChromeGuard.tick();for(let retry=0;retry<6 && status.status!=='healthy' && !status.skipped;retry++){await delay(800);status=await managedChromeGuard.tick();}if(status.status!=='healthy' && !status.skipped)throw Error(`WebHelm Chrome health degraded: ${status.error||status.status}`);return {ok:true,chrome_guard:status};}case'heartbeat':return heartbeatSession(req.session_id);case'list':return {session_count:sessions.size,sessions:[...sessions.values()].map(s=>({session_id:s.session_id,workspace:s.workspace,target_id:s.targetId,last_used_at:s.last_used_at}))};case'start':return createSession(req);case'exec':return execute(req);case'stop':return stopSession(req.session_id);case'stop-all':return stopAllSessions();case'stop-workspace':{if(typeof req.workspace!=='string'||!req.workspace.trim())throw Error('workspace required');return stopWorkspaceSessions(req.workspace)}case'capacity':return workspaceCapacity(req);case'workspace-create':case'workspace-resize':case'workspace-delete':return workspaceOp(req);case'chatgpt-new-turn-enqueue':return getChatGPTQueue().enqueue(req.config);case'platform-run':return runPlatform(req);default:throw Error(`unknown op: ${req.op}`)}}
+export async function handle(req){switch(req.op){case'ping':return {ok:true,pid:process.pid,version:PACKAGE_VERSION,queue_paused:process.env.WEBHELM_CHATGPT_QUEUE_PAUSED==='1',session_count:sessions.size,managed_chrome:managedChrome||{profile_dir:PROFILE_DIR, endpoint:process.env.WEBHELM_CDP_URL||'http://127.0.0.1:9222',reused:true},chrome_guard:managedChromeGuard.status()};case'guard-check':{let status=await managedChromeGuard.tick();for(let retry=0;retry<6 && status.status!=='healthy' && !status.skipped;retry++){await delay(800);status=await managedChromeGuard.tick();}if(status.status!=='healthy' && !status.skipped)throw Error(`WebHelm Chrome health degraded: ${status.error||status.status}`);return {ok:true,chrome_guard:status};}case'heartbeat':return heartbeatSession(req.session_id);case'list':return {session_count:sessions.size,sessions:[...sessions.values()].map(s=>({session_id:s.session_id,workspace:s.workspace,target_id:s.targetId,last_used_at:s.last_used_at}))};case'start':return createSession(req);case'exec':return execute(req);case'stop':return stopSession(req.session_id);case'stop-all':return stopAllSessions();case'stop-workspace':{if(typeof req.workspace!=='string'||!req.workspace.trim())throw Error('workspace required');return stopWorkspaceSessions(req.workspace)}case'capacity':return workspaceCapacity(req);case'workspace-create':case'workspace-resize':case'workspace-delete':return workspaceOp(req);case'chatgpt-new-turn-enqueue':return getChatGPTQueue().enqueue(req.config);case'queue-list':return getChatGPTQueue().list();case'queue-cancel':return getChatGPTQueue().cancel(req.queue_id);case'platform-run':return runPlatform(req);default:throw Error(`unknown op: ${req.op}`)}}
 export function serve(conn) {
   let buffer = '', dispatched = false;
   conn.on('error',()=>{ /* A disconnected client must not crash the daemon. */ });

@@ -33,6 +33,10 @@
     .session-info strong { display:block; font-size:12px; }
     .session-info span { display:block; color:light-dark(var(--muted),#acb8c9); font-size:11px; }
     .session-row button { width:auto; padding:5px 9px; font-size:11px; }
+    .queue-row { display:flex; align-items:center; gap:8px; padding:7px 0; border-bottom:1px solid light-dark(var(--border),#334155); }
+    .queue-info { min-width:0; flex:1; overflow-wrap:anywhere; }
+    .queue-info span { display:block; color:light-dark(var(--muted),#acb8c9); font-size:11px; }
+    .queue-row button { width:auto; padding:5px 9px; font-size:11px; }
     #message { margin-top:8px; font-size:11px; overflow-wrap:anywhere; }
     #message:empty { display:none; }
     [hidden] { display:none !important; }
@@ -44,6 +48,8 @@
     <span id="daemon-status" class="daemon-state" role="status">Connecting…</span>
   </header>
   <div id="workspace-list" class="session-list" aria-label="Workspaces" aria-live="polite">Connecting…</div>
+  <strong>ChatGPT queue</strong>
+  <div id="queue-list" class="session-list" aria-label="ChatGPT queue" aria-live="polite">No queued turns</div>
   <section id="confirmation" hidden aria-label="Confirm clear sessions">
     <p id="confirm-text">Stop the selected WebHelm session(s)? Tasks in progress may be interrupted. Queued jobs remain and may create new sessions.</p>
     <div class="buttons">

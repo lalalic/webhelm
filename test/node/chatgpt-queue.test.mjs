@@ -175,6 +175,40 @@ test("expired CHECKING lease recovers to WAITING for a fresh probe", async (t) =
   assert.equal(q.rows()[0].attempts, 2);
 });
 
+test("queued items can be cancelled but active work cannot", async (t) => {
+  const {q,root}=fixture();
+  t.after(async()=>{await q.shutdown();rmSync(root,{recursive:true,force:true});});
+  const first=q.enqueue({thread_id:"A",message:"first",idempotency_key:"cancel-me"}).queue_id;
+  const second=q.enqueue({thread_id:"B",message:"second",idempotency_key:"keep-me"}).queue_id;
+  assert.deepEqual(q.cancel(first),{ok:true,queue_id:first,state:"CANCELLED"});
+  assert.equal(q.claim("worker").id,second);
+  assert.match(q.cancel(second).error,/only queued/);
+  assert.equal(q.list().items.length,1);
+});
+
+test("dispatcher runs distinct threads in parallel and caps concurrency at four", async (t) => {
+  const root=mkdtempSync(join(tmpdir(),"chatgpt-parallel-"));
+  let active=0, maximum=0, release;
+  const gate=new Promise(resolve=>{release=resolve;});
+  const q=new ChatGPTQueue({
+    persistenceRoot:root, intervalMs:10, concurrency:9,
+    startSession:async()=>({session_id:`session-${Math.random()}`}),
+    execSession:async()=>{
+      active++; maximum=Math.max(maximum,active);
+      await gate;
+      active--;
+      return {ok:true,value:{url:"https://chatgpt.com/c/t",state:{state:"READY",composer_text:"hello"}}};
+    },
+    stopSession:async()=>{},
+  });
+  t.after(async()=>{release();await q.shutdown();rmSync(root,{recursive:true,force:true});});
+  for(let i=0;i<6;i++) q.enqueue({thread_id:`thread-${i}`,message:"hello",idempotency_key:`k-${i}`});
+  q.start();
+  const until=Date.now()+1500;
+  while(Date.now()<until && maximum<4) await new Promise(r=>setTimeout(r,5));
+  assert.equal(maximum,4);
+});
+
 test("dispatcher uses one private session and accepts only a verified send receipt", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "chatgpt-dispatch-"));
   let starts = 0, stops = 0, sends = 0, execs = 0;

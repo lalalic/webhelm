@@ -74,6 +74,25 @@ function renderWorkspaces(workspaces, busy, connected) {
   }
 }
 
+function renderQueue(items, busy, connected) {
+  const target=el('queue-list');
+  target.replaceChildren();
+  if (!items.length) { target.textContent='No active turns'; return; }
+  for (const item of items) {
+    const row=document.createElement('div'); row.className='queue-row';
+    const info=document.createElement('div'); info.className='queue-info';
+    const title=document.createElement('strong'); title.textContent=`Thread ${item.thread_id}`;
+    const detail=document.createElement('span'); detail.textContent=`${item.state.toLowerCase()} · ${item.attempts} attempt${item.attempts===1?'':'s'}`;
+    info.append(title,detail); row.append(info);
+    if (item.state==='QUEUED') row.append(actionButton('Cancel',busy || !connected,async()=>{
+      try { const result=await rpc('workspace.control.queueCancel',{queueId:item.id}); if(!result.id) throw new Error('Missing queue request ID'); el('message').textContent='Waiting for WebHelm daemon…'; }
+      catch(error) { el('message').textContent=error.message; }
+      refresh();
+    }));
+    target.append(row);
+  }
+}
+
 async function refresh() {
   if (refreshRunning) return;
   refreshRunning = true;
@@ -83,6 +102,7 @@ async function refresh() {
     el('daemon-status').className = `daemon-state ${state.connected ? 'online' : 'offline'}`;
     const busy = Boolean(state.request);
     renderWorkspaces(state.workspaces || [], busy, state.connected);
+    renderQueue(state.queue || [], busy, state.connected);
     el('confirm').disabled = !state.connected || busy;
     if (busy) {
       el('message').textContent = 'Stopping sessions…';
