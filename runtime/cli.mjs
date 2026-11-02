@@ -136,7 +136,20 @@ async function main(args = process.argv.slice(2)) {
     const login_guard=installLoginGuard({cliPath,nodePath:process.execPath,sourceMode});
     return emit({status:'ready',...repo,daemon_pid:chrome.pid,managed_chrome:chrome.managed_chrome,login_guard});
   }
-  if (group === 'ensure') return emit(await request({op:'guard-check'}));
+  if (group === 'ensure') {
+    try { return emit(await request({op:'guard-check'})); }
+    catch(error) {
+      // An older, still-busy daemon can hold the same socket during a
+      // rolling source upgrade. Preserve its Sessions; never hot-swap it.
+      if (!String(error.message).includes('unknown op: guard-check')) throw error;
+      const legacy=await request({op:'ping'});
+      if (legacy.session_count>0)
+        return emit({ok:true,deferred_upgrade:true,reason:'legacy_daemon_has_active_sessions',
+          session_count:legacy.session_count,daemon_version:legacy.version||'unknown',
+          chrome_health:'not_verified'});
+      throw Error('Legacy WebHelm daemon lacks health guard; drain and migrate it before activating the new source Runtime');
+    }
+  }
   if (group === 'status') {
     const daemon = await ensureDaemon();
     return emit({version:daemon.version, platform_dir:PLATFORMS, root:ROOT,
