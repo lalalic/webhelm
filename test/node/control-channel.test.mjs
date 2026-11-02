@@ -54,7 +54,8 @@ test('toolbar status resolves current tab titles, activates only an owned sessio
     tabs:{
       async get(tabId){tabCalls.push(['get',tabId]);if(tabId===22)return {id:22,title:'Real ChatGPT Tab',windowId:3};throw Error('Missing tab');},
       async update(tabId,options){tabCalls.push(['update',tabId,options]);},
-      async create(options){tabCalls.push(['create',options]);},
+      async query(){return [];},
+      async create(options){tabCalls.push(['create',options]);return {id:31,windowId:3};},
     },
     windows:{async update(windowId,options){tabCalls.push(['window',windowId,options]);}},
   };
@@ -67,12 +68,25 @@ test('toolbar status resolves current tab titles, activates only an owned sessio
   assert.equal(state.workspaces[0].sessions[1].tabId,null);
   assert.deepEqual(await rpc('workspace.control.activateTab',{sessionId:'active'}),{ok:true});
   await assert.rejects(rpc('workspace.control.activateTab',{sessionId:'unknown'}),/no longer active/);
-  assert.deepEqual(await rpc('workspace.control.openQueue',{queueId:'q1'}),{ok:true});
+  assert.deepEqual(await rpc('workspace.control.openQueue',{queueId:'q1'}),{ok:true,tabId:31,opened:true});
   await assert.rejects(rpc('workspace.control.openQueue',{queueId:'bad'}),/HTTPS/);
   await assert.rejects(rpc('workspace.control.openQueue',{queueId:'missing'}),/no longer available/);
   assert.deepEqual(tabCalls.slice(-3),[
     ['update',22,{active:true}],['window',3,{focused:true}],['create',{url:'https://chatgpt.com/c/a',active:true}],
   ]);
+});
+
+test('queue destination click focuses an exact existing URL without creating a tab',async()=>{
+  const {channel}=build();
+  const calls=[];
+  const chromeApi={
+    tabs:{async query(){return [{id:44,windowId:7,url:'https://chatgpt.com/c/a'}];},async update(id,options){calls.push(['tab',id,options]);}},
+    windows:{async update(id,options){calls.push(['window',id,options]);}},
+  };
+  const rpc=createControlRpc({control:channel,chromeApi,manager:{async list(){return {workspaces:[]};}},summarizeWorkspaces,scheduleBadge(){}});
+  await channel.poll(sessions,[{id:'q1',state:'BLOCKED',title:'Review',url:'https://chatgpt.com/c/a'}]);
+  assert.deepEqual(await rpc('workspace.control.openQueue',{queueId:'q1'}),{ok:true,tabId:44,focused:true});
+  assert.deepEqual(calls,[['tab',44,{active:true}],['window',7,{focused:true}]]);
 });
 
 test('stop group targets only requested group and is not silently repeated',async()=>{
@@ -163,7 +177,7 @@ test('abandoned processing action reports uncertainty without replay',async()=>{
   assert.equal((await channel.complete(command.id,{ok:true})).ignored,true);
 });
 
-test('queue state relays through control storage and cancellation is limited to safe pre-send entries',async()=>{
+test('queue state relays through control storage; non-running entries are removable',async()=>{
   const {channel}=build();
   const queued=[{id:'queued-1',thread_id:'thread-1',state:'QUEUED',attempts:0}];
   await channel.poll(sessions,queued);
@@ -173,4 +187,8 @@ test('queue state relays through control storage and cancellation is limited to 
   await channel.complete(command.id,{ok:true,queue_id:'queued-1',state:'CANCELLED'});
   await channel.poll(sessions,[{...queued[0],state:'CHECKING'}]);
   await assert.rejects(channel.requestQueueCancel('queued-1'),/no longer cancellable/);
+  await channel.poll(sessions,[{...queued[0],state:'UNCERTAIN'}]);
+  const uncertain=await channel.requestQueueCancel('queued-1');
+  assert.equal((await channel.poll(sessions,[{...queued[0],state:'UNCERTAIN'}])).queueId,'queued-1');
+  await channel.complete(uncertain.id,{ok:true,queue_id:'queued-1',state:'CANCELLED'});
 });

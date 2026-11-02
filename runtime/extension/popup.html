@@ -22,8 +22,8 @@
     #confirmation p { color:inherit; }
     .buttons { display:flex; gap:8px; }
     .session-list { max-height:360px; overflow-y:auto; }
-    .workspace-row { padding:9px 0; border-bottom:1px solid light-dark(var(--border),#334155); }
-    .workspace-row:last-child { border-bottom:0; }
+    .workspace-row { padding:7px 0; }
+    .workspace-row + .workspace-row { border-top:1px solid light-dark(var(--border),#334155); }
     .workspace-title { display:flex; align-items:center; gap:8px; justify-content:space-between; }
     .workspace-title strong { font-size:13px; overflow-wrap:anywhere; }
     .workspace-title button { width:auto; flex-shrink:0; padding:4px 8px; font-size:11px; }
@@ -33,7 +33,11 @@
     .session-info strong { display:block; font-size:12px; }
     .session-info span { display:block; color:light-dark(var(--muted),#acb8c9); font-size:11px; }
     .session-row button { width:auto; padding:5px 9px; font-size:11px; }
-    .queue-row { display:flex; align-items:center; gap:8px; padding:7px 0; border-bottom:1px solid light-dark(var(--border),#334155); }
+    #queue-list { border-top:1px solid light-dark(var(--border),#334155); padding-top:6px; margin-top:2px; }
+    .queue-platform { padding:5px 0; }
+    .queue-platform + .queue-platform { border-top:1px solid light-dark(var(--border),#334155); }
+    .queue-platform-title { font-size:12px; }
+    .queue-row { display:flex; align-items:center; gap:8px; padding:5px 0; }
     .queue-info { min-width:0; flex:1; overflow-wrap:anywhere; }
     .queue-info span { display:block; color:light-dark(var(--muted),#acb8c9); font-size:11px; }
     .queue-row button { width:auto; padding:5px 9px; font-size:11px; }
@@ -54,7 +58,6 @@
     <span id="daemon-status" class="daemon-state" role="status">Connecting…</span>
   </header>
   <div id="workspace-list" class="session-list" aria-label="Workspaces" aria-live="polite">Connecting…</div>
-  <strong>Queue</strong>
   <div id="queue-list" class="session-list" aria-label="Queue" aria-live="polite">No queue entries</div>
   <section id="confirmation" hidden aria-label="Confirm clear sessions">
     <p id="confirm-text">Stop the selected WebHelm session(s)? Tasks in progress may be interrupted. Queued jobs remain and may create new sessions.</p>

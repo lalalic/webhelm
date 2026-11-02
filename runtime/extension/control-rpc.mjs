@@ -39,8 +39,16 @@ export function createControlRpc({control, manager, summarizeWorkspaces, schedul
         const item = state.queue.find(item => item.id === args.queueId);
         if (!item || typeof item.url !== 'string') throw Error('Queue entry no longer available');
         const url = validateQueueUrl(item.url);
-        await chromeApi.tabs.create({url, active:true});
-        return {ok:true};
+        const existing = (await chromeApi.tabs.query({})).find(tab => {
+          try { return new URL(tab.url).href === url; } catch { return false; }
+        });
+        if (existing) {
+          await chromeApi.tabs.update(existing.id,{active:true});
+          await chromeApi.windows.update(existing.windowId,{focused:true});
+          return {ok:true,tabId:existing.id,focused:true};
+        }
+        const opened = await chromeApi.tabs.create({url, active:true});
+        return {ok:true,tabId:opened.id,opened:true};
       }
       case "workspace.control.requestStop":
         return control.requestStop(args.action, args.sessionId, args.workspace);

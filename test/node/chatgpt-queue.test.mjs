@@ -182,7 +182,7 @@ test("queued items can be cancelled but active work cannot", async (t) => {
   const second=q.enqueue({thread_id:"B",message:"second",idempotency_key:"keep-me"}).queue_id;
   assert.deepEqual(q.cancel(first),{ok:true,queue_id:first,state:"CANCELLED"});
   assert.equal(q.claim("worker").id,second);
-  assert.match(q.cancel(second).error,/running or uncertain/);
+  assert.match(q.cancel(second).error,/running or completed/);
   assert.equal(q.list().items.length,1);
 });
 
@@ -192,6 +192,7 @@ test("queue description supplies a short title and safe thread URL without paylo
   const first=q.enqueue({thread_id:'t /123',project_id:'p /456',message:'Summarize this video\nprivate next line',idempotency_key:'display-1'});
   const item=q.list().items.find(item=>item.id===first.queue_id);
   assert.equal(item.title,'Summarize this video');
+  assert.equal(item.platform,'ChatGPT');
   assert.equal(item.url,'https://chatgpt.com/g/p%20%2F456/c/t%20%2F123');
   assert.doesNotMatch(item.url,/Summarize|private|prompt/);
   const long=q.enqueue({thread_id:'long',message:'A'.repeat(200),idempotency_key:'display-2'});
@@ -200,7 +201,7 @@ test("queue description supplies a short title and safe thread URL without paylo
   assert.ok(title.endsWith('…'));
 });
 
-test("remove permits pre-send WAITING and BLOCKED, but never SENDING or UNCERTAIN", async (t) => {
+test("remove permits non-running WAITING, BLOCKED and UNCERTAIN, but never SENDING", async (t) => {
   const {q,root}=fixture();
   t.after(async()=>{await q.shutdown();rmSync(root,{recursive:true,force:true});});
   const waiting=q.enqueue({thread_id:'waiting',message:'a',idempotency_key:'wait'}).queue_id;
@@ -216,7 +217,22 @@ test("remove permits pre-send WAITING and BLOCKED, but never SENDING or UNCERTAI
   q.transition(sending,'worker3','CHECKING','SENDING');
   assert.equal(q.cancel(sending).ok,false);
   q.transition(sending,'worker3','SENDING','UNCERTAIN',{receipt:'unknown'});
-  assert.equal(q.cancel(sending).ok,false);
+  assert.equal(q.cancel(sending).ok,true);
+});
+
+test("UNCERTAIN is removable without resending or erasing idempotency evidence", async (t) => {
+  const {q,root}=fixture();
+  t.after(async()=>{await q.shutdown();rmSync(root,{recursive:true,force:true});});
+  const id=q.enqueue({thread_id:'uncertain',message:'maybe sent',idempotency_key:'known'}).queue_id;
+  q.claim('sender');
+  q.transition(id,'sender','CHECKING','SENDING');
+  assert.equal(q.cancel(id).ok,false);
+  q.transition(id,'sender','SENDING','UNCERTAIN',{receipt:'could have been sent'});
+  assert.deepEqual(q.cancel(id),{ok:true,queue_id:id,state:'CANCELLED'});
+  assert.equal(q.rows().find(row=>row.id===id).receipt,'could have been sent');
+  assert.equal(q.list().items.some(row=>row.id===id),false);
+  assert.equal(q.enqueue({thread_id:'uncertain',message:'maybe sent',idempotency_key:'known'}).queue_id,id);
+  assert.equal(q.claim('later'),null);
 });
 
 test("WAITING work is not eligible for enqueue-time merge", async (t) => {

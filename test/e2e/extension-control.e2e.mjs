@@ -61,6 +61,14 @@ async function evaluate(sid,expr){
   if(result.exceptionDetails)throw Error(JSON.stringify(result.exceptionDetails));
   return result.result?.value;
 }
+async function mouseClick(sid,selector){
+  const rect=await evaluate(sid,`(()=>{const r=document.querySelector(${JSON.stringify(selector)})?.getBoundingClientRect();return r&&{x:r.x+r.width/2,y:r.y+r.height/2}})()`);
+  assert.ok(rect,`visible element ${selector}`);
+  await cdp('Input.dispatchMouseEvent',{type:'mouseMoved',x:rect.x,y:rect.y},sid);
+  await cdp('Input.dispatchMouseEvent',{type:'mousePressed',x:rect.x,y:rect.y,button:'left',clickCount:1},sid);
+  await sleep(1_700); // Cross the popup's 1.5-second refresh while the press is held.
+  await cdp('Input.dispatchMouseEvent',{type:'mouseReleased',x:rect.x,y:rect.y,button:'left',clickCount:1},sid);
+}
 async function rpc(workerSid,method,args={}){
   const value=await evaluate(workerSid,`globalThis.browserWorkspaceManagerRpc(${JSON.stringify({method,args})})`);
   if(!value?.ok)throw Error('Extension RPC '+method+' '+JSON.stringify(value));
@@ -109,6 +117,29 @@ try {
   workerSid=await attach(worker.targetId);
   const badgeText=()=>evaluate(workerSid,'chrome.action.getBadgeText({})');
   assert.equal(await waitFor(async()=>await badgeText()==='1'?'1':null,'badge one Session'),'1');
+  await waitFor(async()=>{
+    const status=await rpc(workerSid,'workspace.control.status');
+    return status.sessions?.some(session=>session.session_id===first.session_id && Number.isInteger(session.tabId))?true:null;
+  },'daemon tab ownership snapshot');
+  const liveGroup=(await rpc(workerSid,'workspace.list')).workspaces.find(w=>w.name==='WebHelm');
+  // Model an abandoned daemon lease, not an unowned Chrome-created blank tab
+  // (the extension deliberately ungroups unrelated blank tabs).
+  const orphanLease=await rpc(workerSid,'workspace.acquireIdentity',{name:'WebHelm'});
+  const orphanTab=await evaluate(workerSid,`chrome.tabs.update(${orphanLease.tabId},{url:'about:blank',active:false})`);
+  const firstLease=await rpc(workerSid,'workspace.acquireIdentity',{name:'WebHelm'});
+  await rpc(workerSid,'workspace.release',{name:'WebHelm',tabId:firstLease.tabId});
+  const beforeRecovery=(await rpc(workerSid,'workspace.status',{name:'WebHelm'})).physicalTabs;
+  await sleep(61_000);
+  const recoveryLease=await rpc(workerSid,'workspace.acquireIdentity',{name:'WebHelm'});
+  await rpc(workerSid,'workspace.release',{name:'WebHelm',tabId:recoveryLease.tabId});
+  const recoveredOrphan=await evaluate(workerSid,`chrome.tabs.get(${orphanTab.id})`);
+  assert.equal(recoveredOrphan.url,`chrome-extension://${EXTENSION_ID}/helm.html?workspace=WebHelm&role=idle`);
+  assert.equal(recoveredOrphan.id,orphanTab.id,'orphan recovery navigates the original Chrome tab');
+  assert.equal((await rpc(workerSid,'workspace.status',{name:'WebHelm'})).physicalTabs,beforeRecovery,
+    'orphan recovery neither replaces nor adds a managed tab');
+  const activeTarget=(await cdp('Target.getTargetInfo',{targetId:first.target_id})).targetInfo;
+  assert.equal(activeTarget.targetId,first.target_id,'daemon-owned active Session tab was not recovered');
+  console.log('ORPHAN RECOVERY PASS: same tab identity retained; daemon-owned Session excluded');
   let groups=await rpc(workerSid,'workspace.list');
   assert.ok(groups.workspaces.some(w=>w.name==='WebHelm'));
   assert.ok(!groups.workspaces.some(w=>w.name==='Harness'));
@@ -220,20 +251,33 @@ try {
   }});
   assert.equal(receipt.ok,true);
   const queueDisplayed=await waitFor(async()=>evaluate(popupSid,
-    `({title:document.querySelector('.queue-title')?.textContent, remove:document.querySelector('.queue-row button:last-child')?.textContent})`)
+    `({title:document.querySelector('.queue-title')?.textContent, heading:document.querySelector('.queue-platform-title')?.textContent, remove:document.querySelector('.queue-row button:last-child')?.textContent})`)
     .then(row=>row.title==='Review this draft' && row.remove==='Remove'?row:null), 'queue title and remove');
   assert.equal(queueDisplayed.title,'Review this draft');
-  await evaluate(popupSid,`document.querySelector('.queue-title').click()`);
+  assert.equal(queueDisplayed.heading,'ChatGPT Queue');
+  await evaluate(popupSid,'globalThis.__queueTitleNode=document.querySelector(".queue-title")');
+  await mouseClick(popupSid,'.queue-title');
+  assert.equal(await evaluate(popupSid,'document.querySelector(".queue-title")===globalThis.__queueTitleNode'),true,
+    'the popup retains the clicked queue node across a refresh');
   const opened=await waitFor(async()=>{
     const tabs=await evaluate(workerSid,'chrome.tabs.query({})');
     return tabs.some(tab=>tab.url?.startsWith('https://chatgpt.com/c/webhelm-e2e-title-test'));
   },'queue title opens thread');
   assert.equal(opened,true);
-  await evaluate(popupSid,`document.querySelector('.queue-row button:last-child').click()`);
+  await mouseClick(popupSid,'.queue-title');
+  const focusedQueueTabs=await evaluate(workerSid,"chrome.tabs.query({}).then(tabs=>tabs.filter(tab=>tab.url?.startsWith('https://chatgpt.com/c/webhelm-e2e-title-test')).map(tab=>({id:tab.id,active:tab.active})))");
+  assert.equal(focusedQueueTabs.length,1,'repeated title click focuses the existing destination instead of opening a duplicate');
+  assert.equal(focusedQueueTabs[0].active,true);
+  await mouseClick(popupSid,'.queue-row button:last-child');
   await waitFor(async()=>{
     const queue=await request({op:'queue-list'});
     return !queue.items.some(item=>item.id===receipt.queue_id);
   },'queue item removal');
+  const removalMessage=await waitFor(async()=>{
+    const msg=await evaluate(popupSid,"document.querySelector('#message').textContent");
+    return /Queue entry removed/.test(msg)?msg:null;
+  },'Queue removal acknowledgement');
+  assert.match(removalMessage,/Queue entry removed/);
   console.log('QUEUE SHORT TITLE / NAVIGATE / REMOVE PASS');
   await waitFor(async()=>evaluate(popupSid,"[...document.querySelectorAll('.workspace-title button')].every(button=>!button.disabled)"),'popup operations ready');
 

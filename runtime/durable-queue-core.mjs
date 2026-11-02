@@ -49,7 +49,13 @@ export class DurableQueueCore {
     return {...result, items: result.items.map(item => {
       const row = rows.get(item.id);
       const description = row && this.policy.describe(row);
-      return description ? {...item, title: description.title, url: description.url} : item;
+      if (!description) return item;
+      return {
+        ...item,
+        ...(description.title !== undefined ? {title:description.title} : {}),
+        ...(description.url !== undefined ? {url:description.url} : {}),
+        ...(description.platform !== undefined ? {platform:description.platform} : {}),
+      };
     })};
   }
   start() {

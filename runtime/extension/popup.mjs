@@ -2,7 +2,10 @@ const el = id => document.getElementById(id);
 let confirming = false;
 let chosen = null;
 let lastSignature = '';
+let lastQueueSignature = '';
 let refreshRunning = false;
+const queueRows = new Map();
+const queueGroups = new Map();
 
 async function rpc(method, args = {}) {
   const response = await chrome.runtime.sendMessage({method, args});
@@ -79,28 +82,72 @@ function renderWorkspaces(workspaces, busy, connected) {
 }
 
 function renderQueue(items, busy, connected) {
+  const signature=JSON.stringify(items.map(item=>[item.id,item.platform,item.title,item.url,item.state,item.attempts]))+`:${busy}:${connected}`;
+  if (signature===lastQueueSignature) return;
+  lastQueueSignature=signature;
   const target=el('queue-list');
-  target.replaceChildren();
-  if (!items.length) { target.textContent='No queue entries'; return; }
+  const grouped = new Map();
   for (const item of items) {
-    const row=document.createElement('div'); row.className='queue-row';
-    const info=document.createElement('div'); info.className='queue-info';
-    const title=actionButton(item.title || 'ChatGPT message', !connected || !item.url, async()=>{
-      try { await rpc('workspace.control.openQueue',{queueId:item.id}); }
-      catch(error) { el('message').textContent=error.message; }
-    }, 'queue-title');
-    title.title=item.title || 'ChatGPT message';
-    const detail=document.createElement('span'); detail.textContent=`${item.state.toLowerCase()} · ${item.attempts} attempt${item.attempts===1?'':'s'}`;
-    info.append(title,detail); row.append(info);
-    const safe=['QUEUED','WAITING','BLOCKED'].includes(item.state);
-    const remove=actionButton('Remove',!safe || busy || !connected,async()=>{
-      try { const result=await rpc('workspace.control.queueCancel',{queueId:item.id}); if(!result.id) throw new Error('Missing queue request ID'); el('message').textContent='Waiting for WebHelm daemon…'; }
-      catch(error) { el('message').textContent=error.message; }
-      refresh();
-    });
-    if (!safe) remove.title='Cannot remove a running or unverified submission';
-    row.append(remove);
-    target.append(row);
+    const platform = String(item.platform || 'Queue');
+    if (!grouped.has(platform)) grouped.set(platform, []);
+    grouped.get(platform).push(item);
+  }
+  const activeGroupKeys = new Set(grouped.keys());
+  const activeRowKeys = new Set(items.map(item => `${item.platform || 'Queue'}:${item.id}`));
+  for (const [key, group] of queueGroups) if (!activeGroupKeys.has(key)) {
+    group.remove(); queueGroups.delete(key);
+  }
+  for (const [key, row] of queueRows) if (!activeRowKeys.has(key)) {
+    row.remove(); queueRows.delete(key);
+  }
+  if (!items.length) {
+    target.replaceChildren();
+    const empty=document.createElement('div'); empty.className='empty-queue'; empty.textContent='No queue entries';
+    target.append(empty);
+    return;
+  }
+  target.querySelector('.empty-queue')?.remove();
+  for (const [platform, entries] of grouped) {
+    let group = queueGroups.get(platform);
+    if (!group) {
+      group = document.createElement('section'); group.className='queue-platform';
+      const heading = document.createElement('strong'); heading.className='queue-platform-title';
+      heading.textContent=platform==='Queue'?'Queue':`${platform} Queue`;
+      const rows = document.createElement('div'); rows.className='queue-platform-rows';
+      group.append(heading, rows); queueGroups.set(platform, group); target.append(group);
+    }
+    for (const item of entries) {
+      const key = `${platform}:${item.id}`;
+      let row = queueRows.get(key);
+      if (!row) {
+        row=document.createElement('div'); row.className='queue-row';
+        const info=document.createElement('div'); info.className='queue-info';
+        const title=actionButton('', false, async()=>{
+          try { await rpc('workspace.control.openQueue',{queueId:item.id}); el('message').textContent='Queue destination opened.'; }
+          catch(error) { el('message').textContent=error.message; }
+        }, 'queue-title');
+        const detail=document.createElement('span'); detail.className='queue-detail';
+        const remove=actionButton('Remove', false, async()=>{
+          try { const result=await rpc('workspace.control.queueCancel',{queueId:item.id}); if(!result.id) throw new Error('Missing queue request ID'); el('message').textContent='Waiting for WebHelm daemon…'; }
+          catch(error) { el('message').textContent=error.message; }
+          refresh();
+        });
+        row.append(info, remove); info.append(title, detail);
+        queueRows.set(key,row);
+      }
+      const title=row.querySelector('.queue-title');
+      title.textContent=item.title || `${platform} message`;
+      title.title=item.title || `${platform} message`;
+      title.disabled=!connected || !item.url;
+      row.querySelector('.queue-detail').textContent=`${item.state.toLowerCase()} · ${item.attempts} attempt${item.attempts===1?'':'s'}`;
+      const remove=row.querySelector('button:last-child');
+      const safe=['QUEUED','WAITING','BLOCKED','UNCERTAIN'].includes(item.state);
+      remove.disabled=!safe || busy || !connected;
+      remove.title=safe?'':'Cannot remove a running or completed submission';
+      const rows=group.querySelector('.queue-platform-rows');
+      if (row.parentElement!==rows) rows.append(row);
+    }
+    if (group.parentElement!==target) target.append(group);
   }
 }
 

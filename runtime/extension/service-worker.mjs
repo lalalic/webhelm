@@ -6,6 +6,10 @@ import { createControlRpc } from "./control-rpc.mjs";
 
 const manager = new WorkspaceManager(chrome);
 const control = new ControlChannel(chrome);
+manager.setOwnershipProvider(async () => {
+  const state = await control.status();
+  return state.connected ? state.sessions : null;
+});
 const closingWindowIds = new Set();
 let badgeTimer = null;
 
@@ -26,11 +30,16 @@ function scheduleBadge() {
 }
 
 const BADGE_ALARM = "webhelm.badge-refresh";
+const ORPHAN_ALARM = "webhelm.orphan-lease-recovery";
 async function scheduleBadgeAlarm() {
   await chrome.alarms.create(BADGE_ALARM, {periodInMinutes: 0.5});
+  await chrome.alarms.create(ORPHAN_ALARM, {periodInMinutes: 1});
 }
 chrome.alarms.onAlarm.addListener(alarm => {
   if (alarm.name === BADGE_ALARM) scheduleBadge();
+  if (alarm.name === ORPHAN_ALARM) manager.recoverConfiguredOrphans().catch(error => {
+    console.warn("WebHelm orphan lease recovery failed", error);
+  });
 });
 scheduleBadgeAlarm().catch(error => console.warn("WebHelm badge alarm failed", error));
 

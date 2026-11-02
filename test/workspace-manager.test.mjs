@@ -28,6 +28,10 @@ function fakeChrome() {
           Object.assign(storage, clone(values));
         },
       },
+      session: {
+        async get(key) { return { [key]: clone(storage[key]) }; },
+        async set(values) { Object.assign(storage, clone(values)); },
+      },
     },
     tabs: {
       async query(query = {}) {
@@ -853,4 +857,49 @@ test('agent lease never creates an unknown or missing app Workspace', async()=>{
   const lease=await manager.acquireIdentity('Neo');
   assert.equal(lease.workspace,'Neo');
   await manager.release('Neo',lease.tabId);
+});
+
+test('orphan blank leases recover in place after grace and active daemon tabs are excluded', async () => {
+  const chrome=fakeChrome();
+  let now=1_000;
+  const manager=new WorkspaceManager(chrome,{now:()=>now,orphanGraceMs:60_000});
+  const workspace=await manager.create('WebHelm',4);
+  const active=await manager.acquireIdentity('WebHelm');
+  await chrome.tabs.update(active.tabId,{url:'about:blank'});
+  const orphan=await chrome.tabs.create({url:'about:blank',active:false});
+  await chrome.tabs.group({groupId:workspace.groupId,tabIds:[orphan.id]});
+  manager.setOwnershipProvider(async()=>[{session_id:'active',workspace:'WebHelm',tabId:null,tabIds:[active.tabId]}]);
+
+  await manager.workspaceLock('WebHelm').run(()=>manager.recoverOrphanedLeases('WebHelm'));
+  now+=60_001;
+  const restartedManager=new WorkspaceManager(chrome,{now:()=>now,orphanGraceMs:60_000});
+  restartedManager.setOwnershipProvider(async()=>[{session_id:'active',workspace:'WebHelm',tabId:null,tabIds:[active.tabId]}]);
+  const recovered=await restartedManager.recoverConfiguredOrphans();
+  assert.deepEqual(recovered,[{workspace:'WebHelm',tabId:orphan.id,recovered:true}]);
+  assert.equal((await chrome.tabs.get(orphan.id)).url,chrome.runtime.getURL('helm.html?workspace=WebHelm&role=idle'));
+  assert.equal((await chrome.tabs.get(active.tabId)).url,'about:blank');
+  const state=await manager.status('WebHelm');
+  assert.ok(state.tabIds.includes(orphan.id));
+  assert.ok(state.tabIds.includes(active.tabId));
+  assert.equal(state.physicalTabs,2,'recovery preserves both tab identities without replacement');
+});
+
+test('concurrent workspace acquisitions remain serialized while recovering', async()=>{
+  const chrome=fakeChrome(),manager=new WorkspaceManager(chrome);
+  await manager.create('WebHelm',4);
+  const [first,second]=await Promise.all([
+    manager.acquireIdentity('WebHelm'),manager.acquireIdentity('WebHelm'),
+  ]);
+  assert.notEqual(first.tabId,second.tabId);
+  assert.equal((await manager.status('WebHelm')).leased,2);
+});
+
+test('orphan recovery refuses to touch tabs while daemon ownership is unavailable', async()=>{
+  const chrome=fakeChrome(),manager=new WorkspaceManager(chrome,{orphanGraceMs:0});
+  const workspace=await manager.create('WebHelm',4);
+  const blank=await chrome.tabs.create({url:'about:blank',active:false});
+  await chrome.tabs.group({groupId:workspace.groupId,tabIds:[blank.id]});
+  manager.setOwnershipProvider(async()=>null);
+  assert.deepEqual(await manager.recoverConfiguredOrphans(),[]);
+  assert.equal((await chrome.tabs.get(blank.id)).url,'about:blank');
 });

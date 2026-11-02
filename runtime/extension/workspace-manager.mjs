@@ -2,6 +2,20 @@ const STORAGE_KEY = "browserWorkspaceManager.v1";
 const MIN_POOL_SIZE = 1;
 const MAX_POOL_SIZE = 64;
 const EXTENSION_MANAGEMENT_RECENCY_MS = 15_000;
+const ORPHAN_LEASE_GRACE_MS = 60_000;
+const ORPHAN_OBSERVED_KEY = "webhelm.orphan-observed.v1";
+
+class Mutex {
+  constructor() { this.tail = Promise.resolve(); }
+  async run(fn) {
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    const previous = this.tail;
+    this.tail = previous.then(() => gate);
+    await previous;
+    try { return await fn(); } finally { release(); }
+  }
+}
 
 export function normalizeWorkspaceName(value) {
   const name = String(value || "").trim();
@@ -23,10 +37,110 @@ function queryString(workspace) {
 }
 
 export class WorkspaceManager {
-  constructor(chromeApi) {
+  constructor(chromeApi, { now = () => Date.now(), orphanGraceMs = ORPHAN_LEASE_GRACE_MS } = {}) {
     this.chrome = chromeApi;
+    this.now = now;
+    this.orphanGraceMs = orphanGraceMs;
+    this.getDaemonSessions = async () => null;
+    this.workspaceLocks = new Map();
+    this.orphanObserved = new Map();
+    this.orphanObservedLoaded = false;
+    this.inFlightTabIds = new Set();
     this.recentExtensionManagementByWindow = new Map();
     this.ownedTabIds = new Set();
+  }
+
+  setOwnershipProvider(provider) {
+    this.getDaemonSessions = provider;
+  }
+
+  workspaceLock(name) {
+    if (!this.workspaceLocks.has(name)) this.workspaceLocks.set(name, new Mutex());
+    return this.workspaceLocks.get(name);
+  }
+
+  async loadOrphanObservations() {
+    if (this.orphanObservedLoaded) return;
+    this.orphanObservedLoaded = true;
+    if (!this.chrome.storage.session) return;
+    const saved = (await this.chrome.storage.session.get(ORPHAN_OBSERVED_KEY))[ORPHAN_OBSERVED_KEY] || {};
+    this.orphanObserved = new Map(Object.entries(saved).map(([key, value]) => [key, Number(value)]));
+  }
+
+  async saveOrphanObservations() {
+    if (!this.chrome.storage.session) return;
+    await this.chrome.storage.session.set({[ORPHAN_OBSERVED_KEY]:Object.fromEntries(this.orphanObserved)});
+  }
+
+  async recoverOrphanedLeases(name, { sessions = null, graceMs = this.orphanGraceMs } = {}) {
+    await this.loadOrphanObservations();
+    const normalizedName = normalizeWorkspaceName(name);
+    const { entry } = await this.configuredWorkspace(normalizedName);
+    if (!entry) return [];
+    const group = await this.workspaceGroup(normalizedName);
+    if (!group) return [];
+    const daemonSessions = sessions ?? await this.getDaemonSessions();
+    // A disconnected daemon cannot certify that an apparently leased tab is orphaned.
+    if (!Array.isArray(daemonSessions)) return [];
+    const ownedTabIds = new Set((daemonSessions || []).flatMap(session => [session.tabId, ...(session.tabIds || [])])
+      .map(Number).filter(Number.isInteger));
+    const tabs = await this.groupTabs(group.id);
+    const candidates = tabs.filter(tab => {
+      const url = this.tabUrl(tab);
+      const meta = this.parseManagedUrl(url);
+      return url === 'about:blank' ||
+        (meta?.workspace === normalizedName && meta.role === 'lease' && meta.tabId === String(tab.id));
+    });
+    const candidateIds = new Set(candidates.map(tab => tab.id));
+    for (const key of this.orphanObserved.keys()) {
+      const [workspace, id] = key.split('\0');
+      if (workspace === normalizedName && !candidateIds.has(Number(id))) this.orphanObserved.delete(key);
+    }
+    await this.saveOrphanObservations();
+    const recovered = [];
+    for (const candidate of candidates) {
+      const key = `${normalizedName}\0${candidate.id}`;
+      if (ownedTabIds.has(candidate.id) || this.inFlightTabIds.has(candidate.id)) {
+        this.orphanObserved.delete(key);
+        continue;
+      }
+      const firstSeen = this.orphanObserved.get(key) ?? this.now();
+      this.orphanObserved.set(key, firstSeen);
+      await this.saveOrphanObservations();
+      if (this.now() - firstSeen < graceMs) continue;
+
+      // Re-read both Chrome ownership and the daemon's current session list
+      // immediately before navigating. The workspace lock excludes acquisition.
+      const current = await this.chrome.tabs.get(candidate.id).catch(() => null);
+      const currentUrl = this.tabUrl(current);
+      const currentMeta = this.parseManagedUrl(currentUrl);
+      const stillCandidate = current?.groupId === group.id && (currentUrl === 'about:blank' ||
+        (currentMeta?.workspace === normalizedName && currentMeta.role === 'lease' && currentMeta.tabId === String(current.id)));
+      const latestSessions = await this.getDaemonSessions();
+      if (!Array.isArray(latestSessions)) continue;
+      if (!stillCandidate || latestSessions.some(session =>
+          Number(session.tabId) === candidate.id || (session.tabIds || []).some(tabId => Number(tabId) === candidate.id)) ||
+          this.inFlightTabIds.has(candidate.id)) {
+        if (!stillCandidate) this.orphanObserved.delete(key);
+        continue;
+      }
+      await this.chrome.tabs.update(candidate.id, { url: this.idleUrl(normalizedName), active: false });
+      const idle = await this.waitForIdleTab(candidate.id, normalizedName);
+      this.markOwned(idle.id);
+      this.orphanObserved.delete(key);
+      await this.saveOrphanObservations();
+      recovered.push({ workspace: normalizedName, tabId: candidate.id, recovered: true });
+    }
+    return recovered;
+  }
+
+  async recoverConfiguredOrphans() {
+    const config = await this.loadConfig();
+    const recovered = [];
+    for (const name of Object.keys(config.workspaces || {}).sort()) {
+      recovered.push(...await this.workspaceLock(name).run(() => this.recoverOrphanedLeases(name)));
+    }
+    return recovered;
   }
 
   isOwnedTab(tab) {
@@ -550,6 +664,7 @@ export class WorkspaceManager {
 
   async acquireIdentity(name) {
     const normalizedName = normalizeWorkspaceName(name);
+    return await this.workspaceLock(normalizedName).run(async () => {
     // Leasing may allocate a Tab inside an existing Workspace, but must never
     // provision a new Workspace as a side effect. Only app-owned creation can.
     const { entry } = await this.configuredWorkspace(normalizedName);
@@ -558,6 +673,7 @@ export class WorkspaceManager {
     // Previously provisioned workspaces may restore a missing physical group
     // from their durable configuration; this never creates a new name.
     const ready = await this.ensureWorkspace(normalizedName);
+    await this.recoverOrphanedLeases(normalizedName);
     const tabs = await this.groupTabs(ready.groupId);
     const { idle, leased } = this.classify(normalizedName, tabs);
     if (!idle.length && leased.length >= ready.poolSize) {
@@ -576,9 +692,12 @@ export class WorkspaceManager {
     }
 
     this.markOwned(tab.id);
+    this.inFlightTabIds.add(tab.id);
     const identityTitle = this.identityTitle(tab.id);
     const identityUrl = this.identityUrl(normalizedName, tab.id);
-    const updated = await this.chrome.tabs.update(tab.id, { url: identityUrl, active: false });
+    let updated;
+    try { updated = await this.chrome.tabs.update(tab.id, { url: identityUrl, active: false }); }
+    finally { this.inFlightTabIds.delete(tab.id); }
     await this.chrome.tabGroups.update(ready.groupId, { title: normalizedName, collapsed: true });
     return {
       workspace: normalizedName,
@@ -589,6 +708,7 @@ export class WorkspaceManager {
       idleUrl: this.idleUrl(normalizedName),
       active: Boolean(updated.active),
     };
+    });
   }
 
   async acquire(name, url) {
@@ -597,6 +717,7 @@ export class WorkspaceManager {
     if (!["http:", "https:", "chrome-extension:"].includes(parsed.protocol)) {
       throw new Error("Workspace acquire requires an http(s) or chrome-extension URL");
     }
+    return await this.workspaceLock(normalizedName).run(async () => {
 
     // Leasing may allocate a Tab inside an existing Workspace, but must never
     // provision a new Workspace as a side effect. Only app-owned creation can.
@@ -606,6 +727,7 @@ export class WorkspaceManager {
     // Previously provisioned workspaces may restore a missing physical group
     // from their durable configuration; this never creates a new name.
     const ready = await this.ensureWorkspace(normalizedName);
+    await this.recoverOrphanedLeases(normalizedName);
     const tabs = await this.groupTabs(ready.groupId);
     const { idle, leased } = this.classify(normalizedName, tabs);
     if (!idle.length && leased.length >= ready.poolSize) {
@@ -634,6 +756,7 @@ export class WorkspaceManager {
       url: updated.url || parsed.href,
       active: Boolean(updated.active),
     };
+    });
   }
 
   async release(name, tabId) {

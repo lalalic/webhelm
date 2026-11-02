@@ -85,7 +85,7 @@ export class ControlChannel {
       if (state.request) throw new Error('Another WebHelm operation is already running');
       if (!Number.isFinite(state.daemon?.seenAt) || this.now() - state.daemon.seenAt >= FRESH_MS)
         throw new Error('WebHelm daemon is not responding');
-      if (!(state.queue || []).some(item => item.id === queueId && ['QUEUED','WAITING','BLOCKED'].includes(item.state)))
+      if (!(state.queue || []).some(item => item.id === queueId && ['QUEUED','WAITING','BLOCKED','UNCERTAIN'].includes(item.state)))
         throw new Error('Queue item is no longer cancellable');
       const request = {id:this.makeId(), action:'queue-cancel', queueId, state:'pending', createdAt:this.now()};
       await this.save({...state, request, lastResult:null});

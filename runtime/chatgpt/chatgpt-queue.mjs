@@ -65,13 +65,13 @@ const chatgptQueuePolicy = {
     const firstLine = row.message.split(/\r?\n/, 1)[0].replace(/\s+/g, ' ').trim();
     const title = firstLine ? (firstLine.length > 52 ? `${firstLine.slice(0, 51)}…` : firstLine) : 'ChatGPT message';
     const prefix = row.project_id ? `/g/${encodeURIComponent(row.project_id)}` : '';
-    return {title, url:`https://chatgpt.com${prefix}/c/${encodeURIComponent(row.thread_id)}`};
+    return {platform:'ChatGPT', title, url:`https://chatgpt.com${prefix}/c/${encodeURIComponent(row.thread_id)}`};
   },
   cancel(db, id) {
     const row=this.one(db, "SELECT * FROM turns WHERE id=?", id);
     if (!row) return {ok:false,queue_id:id,error:"queue item not found"};
-    if (!["QUEUED","WAITING","BLOCKED"].includes(row.state)) return {ok:false,queue_id:id,state:row.state,error:"cannot remove a running or uncertain item"};
-    db.prepare("UPDATE turns SET state='CANCELLED',lease_owner=NULL,lease_until=NULL WHERE id=? AND state IN ('QUEUED','WAITING','BLOCKED')").run(id);
+    if (!["QUEUED","WAITING","BLOCKED","UNCERTAIN"].includes(row.state)) return {ok:false,queue_id:id,state:row.state,error:"cannot remove a running or completed item"};
+    db.prepare("UPDATE turns SET state='CANCELLED',lease_owner=NULL,lease_until=NULL WHERE id=? AND state IN ('QUEUED','WAITING','BLOCKED','UNCERTAIN')").run(id);
     return {ok:true,queue_id:id,state:"CANCELLED"};
   },
   list(db) {
