@@ -75,6 +75,7 @@ async function runPlatform(args) {
   const config = loadConfig(args);
   const mode = validateMode(platform, action, args, config);
   const sid = arg(args, '--session-id');
+  if (sid) await requireCliSession(sid);
   const auto = has(args, '--auto-session');
   validateConfig(platform, action, config);
   if (sid && auto) throw Error('--session-id and --auto-session are mutually exclusive');
@@ -94,7 +95,6 @@ async function runPlatform(args) {
     };
   }
   if (mode === 'sync' && (!sid || auto)) throw Error('sync new-turn requires a caller-owned --session-id');
-  if (sid) await requireCliSession(sid);
   if (!sid && !auto) throw Error('platform run requires --session-id; use --auto-session only for one-shot actions');
   return request({op:'platform-run', platform, action, config: {...config, ...(mode ? {mode} : {})},
     session_id:sid, auto_session:auto, url:arg(args, '--url'), workspace:CLI_WORKSPACE});
@@ -119,6 +119,7 @@ async function requireCliSession(sessionId) {
 async function main(args = process.argv.slice(2)) {
   const [group, command] = args;
   if (!group || ['--help', '-h', 'help'].includes(group) || has(args, '--help') || has(args, '-h')) return help();
+  rejectWorkspaceOverride(args);
   if (group === 'migrate') {
     await ensureActions(); // ~/.local/webhelm is the Actions Git checkout, never create an empty replacement.
     const legacy=await migrateConfig();
@@ -152,7 +153,6 @@ async function main(args = process.argv.slice(2)) {
     return emit(await request(payload));
   }
   if (group === 'session') {
-    rejectWorkspaceOverride(args);
     if (command === 'start') return emit(await request({op:'start', workspace:CLI_WORKSPACE, url:arg(args,'--url')}));
     if (command === 'list') {
       const result=await request({op:'list'});

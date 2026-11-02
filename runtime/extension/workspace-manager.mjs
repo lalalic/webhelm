@@ -552,9 +552,12 @@ export class WorkspaceManager {
     const normalizedName = normalizeWorkspaceName(name);
     // Leasing may allocate a Tab inside an existing Workspace, but must never
     // provision a new Workspace as a side effect. Only app-owned creation can.
-    const ready = await this.status(normalizedName);
-    if (!ready.initialized)
+    const { entry } = await this.configuredWorkspace(normalizedName);
+    if (!entry)
       throw new Error(`Workspace ${normalizedName} does not exist; an application must provision it first`);
+    // Previously provisioned workspaces may restore a missing physical group
+    // from their durable configuration; this never creates a new name.
+    const ready = await this.ensureWorkspace(normalizedName);
     const tabs = await this.groupTabs(ready.groupId);
     const { idle, leased } = this.classify(normalizedName, tabs);
     if (!idle.length && leased.length >= ready.poolSize) {
@@ -597,9 +600,12 @@ export class WorkspaceManager {
 
     // Leasing may allocate a Tab inside an existing Workspace, but must never
     // provision a new Workspace as a side effect. Only app-owned creation can.
-    const ready = await this.status(normalizedName);
-    if (!ready.initialized)
+    const { entry } = await this.configuredWorkspace(normalizedName);
+    if (!entry)
       throw new Error(`Workspace ${normalizedName} does not exist; an application must provision it first`);
+    // Previously provisioned workspaces may restore a missing physical group
+    // from their durable configuration; this never creates a new name.
+    const ready = await this.ensureWorkspace(normalizedName);
     const tabs = await this.groupTabs(ready.groupId);
     const { idle, leased } = this.classify(normalizedName, tabs);
     if (!idle.length && leased.length >= ready.poolSize) {
