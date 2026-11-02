@@ -145,6 +145,7 @@ try {
     const v=await evaluate(popupSid,`({
       text:document.body.innerText,
       daemon:document.querySelector('#daemon-status')?.textContent,
+      duplicateTitle:!!document.querySelector('header h1'),
       groups:[...document.querySelectorAll('.workspace-row')].map(row=>({
         label:row.querySelector('.workspace-title strong')?.textContent,
         stats:row.querySelector('.workspace-details')?.textContent,
@@ -156,6 +157,7 @@ try {
     })`);
     return v?.daemon==='Online' && v.groups.length===2?v:null;
   },'two-group popup');
+  assert.equal(displayed.duplicateTitle,false,'the workspace name appears only in its own row');
   assert.equal(displayed.hasGlobalStop,false);
   assert.equal(displayed.hasTotals,false);
   assert.ok(displayed.groups.every(group=>group.action==='Clear sessions'));
