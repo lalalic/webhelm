@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WebHelm</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --page: #f5f7fb;
+      --card: #fff;
+      --ink: #182234;
+      --subtle: #5f6d81;
+      --border: #e2e8f0;
+      --accent: #335bd1;
+      --accent-bg: #edf2ff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      min-height: 100vh;
+      margin: 0;
+      padding: 32px 20px;
+      display: grid;
+      place-items: center;
+      font: 15px/1.55 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: var(--page);
+    }
+    main {
+      width: min(100%, 460px);
+      padding: clamp(24px, 6vw, 36px);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      background: var(--card);
+      box-shadow: 0 12px 35px rgb(25 42 76 / 5%);
+    }
+    header { display: flex; align-items: center; gap: 14px; }
+    .mark {
+      display: grid;
+      place-items: center;
+      width: 48px;
+      height: 48px;
+      border-radius: 14px;
+      background: var(--accent);
+      color: white;
+      font-size: 24px;
+      font-weight: 750;
+      letter-spacing: -2px;
+    }
+    .eyebrow {
+      margin: 0;
+      color: var(--subtle);
+      font-size: 11px;
+      font-weight: 650;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+    h1 { margin: 1px 0 0; font-size: 24px; line-height: 1.2; letter-spacing: -0.03em; }
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      margin-top: 32px;
+      padding: 7px 12px;
+      border-radius: 999px;
+      background: var(--accent-bg);
+      color: var(--accent);
+      font-weight: 650;
+      font-size: 13px;
+    }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+    .description { margin: 16px 0 24px; color: var(--subtle); }
+    dl {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 16px;
+      margin: 0;
+      padding: 18px 0;
+      border-block: 1px solid var(--border);
+    }
+    dt { margin-bottom: 3px; color: var(--subtle); font-size: 12px; }
+    dd { margin: 0; font-weight: 650; overflow-wrap: anywhere; }
+    footer { margin-top: 20px; color: var(--subtle); font-size: 12px; }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --page: #10151e;
+        --card: #192232;
+        --ink: #edf2f9;
+        --subtle: #a8b3c5;
+        --border: #354256;
+        --accent: #a5baff;
+        --accent-bg: #293656;
+      }
+      .mark { background: #4269e0; }
+      main { box-shadow: none; }
+    }
+    @media (max-width: 380px) {
+      body { padding: 16px; }
+      main { border-radius: 14px; }
+    }
+  </style>
+  <script type="module" src="workspace-page.mjs"></script>
+</head>
+<body>
+  <main aria-labelledby="page-title">
+    <header>
+      <div class="mark" aria-hidden="true">W</div>
+      <div>
+        <p class="eyebrow">Managed browser tab</p>
+        <h1 id="page-title">WebHelm</h1>
+      </div>
+    </header>
+    <div class="status" role="status">
+      <span class="dot" aria-hidden="true"></span>
+      <span id="status-label">Managed workspace</span>
+    </div>
+    <p class="description" id="description">This page belongs to WebHelm's managed browser workspace.</p>
+    <dl>
+      <div><dt>Workspace</dt><dd id="workspace-name">—</dd></div>
+      <div><dt>Tab slot</dt><dd id="slot-number">—</dd></div>
+    </dl>
+    <footer id="help-text">Tab status does not indicate whether the daemon is connected.</footer>
+  </main>
+</body>
+</html>

@@ -9,6 +9,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { invokePlatformAction } from './platforms.mjs';
 import { ChatGPTQueue } from './chatgpt/chatgpt-queue.mjs';
 import { idleUrlFromIdentity, sameIdleUrl, staleSession } from './session-lifecycle.mjs';
+import { stopMatchingSessions } from './session-control.mjs';
 import { ensureManagedChrome } from './chrome.mjs';
 import { ensureExtensionLoaded } from './extension-manager.mjs';
 import { createManagedChromeGuard } from './managed-chrome-guard.mjs';
@@ -70,8 +71,9 @@ async function acquireIdentityLease(session) {
 }
 
 async function connectBrowser() {
-  if(browserWs && !browserWs.closed)return browserWs;
+  // Never expose a CDP connection before Extension initialization finishes.
   if(connectingBrowser)return connectingBrowser;
+  if(browserWs && !browserWs.closed)return browserWs;
   connectingBrowser=(async()=>{
     managedChrome=await ensureManagedChrome();
     const endpoint=managedChrome.endpoint;
@@ -122,9 +124,18 @@ async function connectBrowser() {
   finally{connectingBrowser=null;}
 }
 
-// The daemon owns both the managed Chrome process and the default Harness
+// The daemon owns both the managed Chrome process and the default WebHelm
 // group. Chrome auto-updates can terminate the browser while the Node daemon
 // survives; an RPC-only health check cannot recover that loss.
+const defaultWorkspaceMutex=new Mutex();
+async function defaultWorkspaceName() {
+  if (process.env.WEBHELM_NO_PROFILE_EXTENSION_PROBE === '1') return 'WebHelm';
+  return defaultWorkspaceMutex.run(async()=>{
+    const activeLegacySessions=[...sessions.values()].filter(s=>s.workspace==='Harness').length;
+    const result=await extensionCall(null,'workspace.migrateDefault',{activeLegacySessions});
+    return result.name;
+  });
+}
 async function guardManagedChrome(){
   if(shuttingDown || process.env.WEBHELM_CDP_URL || process.env.WEBHELM_NO_PROFILE_EXTENSION_PROBE==='1')
     return {skipped:true};
@@ -138,17 +149,18 @@ async function guardManagedChrome(){
   managedChrome=actual;
   // Session leasing also creates missing workspaces. Serialize this short
   // identity transaction with session start so one group is created, not two.
-  const state=await leaseMutex('Harness').run(async()=>{
+  const name=await defaultWorkspaceName();
+  const state=await leaseMutex(name).run(async()=>{
     let current;
-    try {current=await extensionCall(null,'workspace.status',{name:'Harness'});}
+    try {current=await extensionCall(null,'workspace.status',{name});}
     catch(error){
       if(sessions.size)throw error; // Never hot reload an Extension used by active Sessions.
       const browser=await connectBrowser();
       await ensureExtensionLoaded(browser);
-      current=await extensionCall(null,'workspace.status',{name:'Harness'});
+      current=await extensionCall(null,'workspace.status',{name});
     }
     if(!current?.initialized || !Number.isInteger(current.physicalTabs) || current.physicalTabs<1)
-      current=await extensionCall(null,'workspace.ensure',{name:'Harness'});
+      current=await extensionCall(null,'workspace.ensure',{name});
     return current;
   });
   return {managed_chrome_pid:actual.pid,group_id:state.groupId,physical_tabs:state.physicalTabs};
@@ -282,7 +294,13 @@ async function evaluateExtension(browser,sessionId,expression){
   if(!value?.ok)throw Error(value?.error?.message||'workspace extension RPC failed');
   return value.result;
 }
-async function extensionCall(_session,method,args={}) {
+// Extension service-worker RPC uses one debugger attachment and must not
+// race concurrent capacity polls, migration and browser Session allocation.
+const extensionRpcMutex=new Mutex();
+async function extensionCall(session,method,args={}) {
+  return extensionRpcMutex.run(()=>extensionCallSerialized(session,method,args));
+}
+async function extensionCallSerialized(_session,method,args={}) {
   const browser=await connectBrowser();
   const request=JSON.stringify({method,args});
   const {targetInfos=[]}=await browser.send('Target.getTargets');
@@ -297,7 +315,7 @@ async function extensionCall(_session,method,args={}) {
       `globalThis.browserWorkspaceManagerRpc(${request})`);
     }catch(error){debuggerSession=null;throw error;}
   }
-  const page=targetInfos.find(t=>t.type==='page'&&t.url.startsWith(EXTENSION_PREFIX)&&t.url.includes('/workspace.html'));
+  const page=targetInfos.find(t=>t.type==='page'&&t.url.startsWith(EXTENSION_PREFIX)&&(t.url.includes('/workspace.html')||t.url.includes('/helm.html')));
   if(page){
     const {sessionId}=await browser.send('Target.attachToTarget',{targetId:page.targetId,flatten:true});
     try{return await evaluateExtension(browser,sessionId,`chrome.runtime.sendMessage(${request})`);}
@@ -307,7 +325,7 @@ async function extensionCall(_session,method,args={}) {
   // Wake a suspended MV3 worker from a temporary background extension page.
   // Only this temporary target is closed; no user tab is reused or modified.
   const {targetId}=await browser.send('Target.createTarget',{
-    url:`${EXTENSION_PREFIX}workspace.html?webhelm_wakeup=1`,background:true});
+    url:`${EXTENSION_PREFIX}helm.html?webhelm_wakeup=1`,background:true});
   let sessionId;
   try{
     ({sessionId}=await browser.send('Target.attachToTarget',{targetId,flatten:true}));
@@ -333,7 +351,7 @@ function jsonSafe(value){try{JSON.stringify(value);return {value}}catch{return {
 async function createSession(req={}) {
   const browser=await connectBrowser();
   const sid=crypto.randomBytes(8).toString('hex');
-  const s={session_id:sid, workspace:req.workspace||'Harness', targetId:null,
+  const s={session_id:sid, workspace:req.workspace||await defaultWorkspaceName(), targetId:null,
     rootTargetId:null, workspaceSupported:false,targets:new Set(), attachments:new Map(), eventDisposers:new Map(),
     leasedTabs:new Map(), idleUrls:new Map(), mutex:new Mutex(), events:[], namespace:null,context:null,
     inFlight:0, closing:false, last_used_at:Date.now()};
@@ -376,10 +394,10 @@ async function extensionSupported() {
   if(!installed)return false;
   let error;
   for(let attempt=0;attempt<3;attempt++){
-    try{await extensionCall({workspace:'Harness'},'workspace.list');return true;}
+    try{await extensionCall({workspace:'WebHelm'},'workspace.list');return true;}
     catch(e){error=e;if(attempt<2)await delay(150);}
   }
-  throw Error(`Browser Workspace extension installed but RPC unavailable: ${error?.message||'unknown'}`);
+  throw Error(`WebHelm extension installed but RPC unavailable: ${error?.message||'unknown'}`);
 }
 
 async function execute(req) {
@@ -431,7 +449,8 @@ async function closeSessionOwned(s){
   s.closing=true;
   let release_error=null;
   try {
-    const count=s.targets.size;
+    const returnedTabs=s.leasedTabs.size;
+    const closedChildTabs=s.targets.size - returnedTabs;
     await s.mutex.run(async()=>{
       const browser=await connectBrowser();
       // Return managed tabs to their original Extension pool; keep their CDP targets.
@@ -449,7 +468,7 @@ async function closeSessionOwned(s){
       s.targets.clear();s.attachments.clear();s.leasedTabs.clear();s.idleUrls.clear();s.eventDisposers.clear();
       sessions.delete(s.session_id);
     });
-    return {session_id:s.session_id,workspace:s.workspace,target_id:s.rootTargetId,closed_tabs:count,returned_to_idle:true,release_error};
+    return {session_id:s.session_id,workspace:s.workspace,target_id:s.rootTargetId,closed_tabs:closedChildTabs,returned_tabs:returnedTabs,returned_to_idle:true,release_error};
   }catch(error){
     s.closing=false; // Keep ownership for a future retry; never reassign on unconfirmed navigation.
     throw error;
@@ -488,7 +507,7 @@ function heartbeatSession(sid){
   return {session_id:sid,alive:true,last_used_at:s.last_used_at};
 }
 
-async function workspaceOp(req){const h=makeHelpers({workspace:req.name||'Harness',targetId:'',targets:new Set(),attachments:new Map()});if(req.op==='workspace-create')return h.workspace_create(req.name,req.pool_size);if(req.op==='workspace-delete')return h.workspace_delete(req.name,req.force);throw Error(`unknown op: ${req.op}`)}
+async function workspaceOp(req){const h=makeHelpers({workspace:req.name||await defaultWorkspaceName(),targetId:'',targets:new Set(),attachments:new Map()});if(req.op==='workspace-create')return h.workspace_create(req.name,req.pool_size);if(req.op==='workspace-delete')return h.workspace_delete(req.name,req.force);throw Error(`unknown op: ${req.op}`)}
 function getChatGPTQueue() {
   if (chatgptQueue) return chatgptQueue;
   chatgptQueue = new ChatGPTQueue({
@@ -505,7 +524,7 @@ function getChatGPTQueue() {
 }
 
 async function workspaceCapacity(req={}) {
-  const name=typeof req.workspace==='string'&&req.workspace.trim()?req.workspace.trim():'Harness';
+  const name=typeof req.workspace==='string'&&req.workspace.trim()?req.workspace.trim():await defaultWorkspaceName();
   const observedAt=new Date().toISOString();
   try {
     const state=await extensionCall(null,'workspace.status',{name});
@@ -521,6 +540,58 @@ async function workspaceCapacity(req={}) {
     return {name,poolSize:null,idle:null,leased:null,available:null,
       observedAt,reason:`WebHelm capacity unavailable: ${error.message}`};
   }
+}
+
+// The popup never runs commands. The daemon is the only actor that consumes
+// Extension control requests, over the already-authenticated CDP channel.
+let controlPollActive = false;
+function visibleSessions() {
+  return [...sessions.values()].map(s => ({
+    session_id:s.session_id,workspace:s.workspace,last_used_at:s.last_used_at,
+  }));
+}
+async function pollExtensionControl() {
+  if (controlPollActive || shuttingDown) return;
+  controlPollActive = true;
+  try {
+    const pendingAction = await extensionCall(null,'workspace.control.poll',{sessions:visibleSessions()});
+    if (!pendingAction) return;
+    const {id,action,sessionId} = pendingAction;
+    // Keep the status panel fresh while a lengthy Session stop waits for
+    // browser navigation or an in-flight task.
+    const controlHeartbeat=setInterval(()=>{
+      extensionCall(null,'workspace.control.heartbeat',{sessions:visibleSessions()})
+        .catch(error=>console.warn(`WebHelm control heartbeat: ${error.message}`));
+    },3000);
+    let response;
+    try {
+      if (action === 'stop-all') {
+        response = await stopAllSessions();
+      } else if (action === 'stop-workspace') {
+        response = await stopWorkspaceSessions(pendingAction.workspace);
+      } else if (action === 'stop') {
+        response = {ok:true,stopped:await stopSession(sessionId)};
+      } else {
+        throw Error('Unknown extension control action');
+      }
+    } catch(error) {
+      response = {ok:false,error:String(error?.message||error)};
+    } finally {
+      clearInterval(controlHeartbeat);
+    }
+    await extensionCall(null,'workspace.control.complete',{id,response});
+    await extensionCall(null,'workspace.control.poll',{sessions:visibleSessions()});
+  } catch(error) {
+    console.warn(`WebHelm extension control sync failed: ${error.message}`);
+  } finally {
+    controlPollActive = false;
+  }
+}
+function stopWorkspaceSessions(workspace) {
+  return stopMatchingSessions(sessions, session => session.workspace === workspace, stopSession);
+}
+function stopAllSessions() {
+  return stopMatchingSessions(sessions, () => true, stopSession);
 }
 
 /** Emit one canonical machine-readable action receipt as the final stdout line. */
@@ -575,7 +646,7 @@ async function runPlatform(req) {
     self_heal_capable:!auto,result};
 }
 
-export async function handle(req){switch(req.op){case'ping':return {ok:true,pid:process.pid,version:PACKAGE_VERSION,queue_paused:process.env.WEBHELM_CHATGPT_QUEUE_PAUSED==='1',session_count:sessions.size,managed_chrome:managedChrome||{profile_dir:PROFILE_DIR, endpoint:process.env.WEBHELM_CDP_URL||'http://127.0.0.1:9222',reused:true},chrome_guard:managedChromeGuard.status()};case'guard-check':{let status=await managedChromeGuard.tick();for(let retry=0;retry<6 && status.status!=='healthy' && !status.skipped;retry++){await delay(800);status=await managedChromeGuard.tick();}if(status.status!=='healthy' && !status.skipped)throw Error(`WebHelm Chrome health degraded: ${status.error||status.status}`);return {ok:true,chrome_guard:status};}case'heartbeat':return heartbeatSession(req.session_id);case'list':return {session_count:sessions.size,sessions:[...sessions.values()].map(s=>({session_id:s.session_id,workspace:s.workspace,target_id:s.targetId,last_used_at:s.last_used_at}))};case'start':return createSession(req);case'exec':return execute(req);case'stop':return stopSession(req.session_id);case'stop-all':{const stopped=[];for(const id of [...sessions.keys()])stopped.push(await stopSession(id));return {stopped_count:stopped.length,error_count:0,stopped,errors:[]}}case'capacity':return workspaceCapacity(req);case'workspace-create':case'workspace-delete':return workspaceOp(req);case'chatgpt-new-turn-enqueue':return getChatGPTQueue().enqueue(req.config);case'platform-run':return runPlatform(req);default:throw Error(`unknown op: ${req.op}`)}}
+export async function handle(req){switch(req.op){case'ping':return {ok:true,pid:process.pid,version:PACKAGE_VERSION,queue_paused:process.env.WEBHELM_CHATGPT_QUEUE_PAUSED==='1',session_count:sessions.size,managed_chrome:managedChrome||{profile_dir:PROFILE_DIR, endpoint:process.env.WEBHELM_CDP_URL||'http://127.0.0.1:9222',reused:true},chrome_guard:managedChromeGuard.status()};case'guard-check':{let status=await managedChromeGuard.tick();for(let retry=0;retry<6 && status.status!=='healthy' && !status.skipped;retry++){await delay(800);status=await managedChromeGuard.tick();}if(status.status!=='healthy' && !status.skipped)throw Error(`WebHelm Chrome health degraded: ${status.error||status.status}`);return {ok:true,chrome_guard:status};}case'heartbeat':return heartbeatSession(req.session_id);case'list':return {session_count:sessions.size,sessions:[...sessions.values()].map(s=>({session_id:s.session_id,workspace:s.workspace,target_id:s.targetId,last_used_at:s.last_used_at}))};case'start':return createSession(req);case'exec':return execute(req);case'stop':return stopSession(req.session_id);case'stop-all':return stopAllSessions();case'capacity':return workspaceCapacity(req);case'workspace-create':case'workspace-delete':return workspaceOp(req);case'chatgpt-new-turn-enqueue':return getChatGPTQueue().enqueue(req.config);case'platform-run':return runPlatform(req);default:throw Error(`unknown op: ${req.op}`)}}
 function serve(conn) {
   let buffer = '';
   conn.setEncoding('utf8');
@@ -593,7 +664,10 @@ function serve(conn) {
   });
 }
 
-async function main(){fs.mkdirSync(RUNTIME,{recursive:true,mode:0o700});let lockfd;try{lockfd=fs.openSync(LOCK,'wx',0o600);fs.writeFileSync(lockfd,String(process.pid))}catch{throw Error(`Node pilot lock exists: ${LOCK}`)}if(fs.existsSync(SOCKET)){try{const c=net.createConnection(SOCKET);await new Promise((res,rej)=>{c.once('connect',res);c.once('error',rej)});c.destroy();fs.closeSync(lockfd);fs.unlinkSync(LOCK);throw Error(`Node daemon socket already active: ${SOCKET}`)}catch(e){if(e.message.includes('already active'))throw e;fs.unlinkSync(SOCKET)}}socket=net.createServer(serve);await new Promise((res,rej)=>socket.listen(SOCKET,res).once('error',rej));fs.chmodSync(SOCKET,0o600);connectBrowser().catch(()=>{});managedChromeGuard.start();getChatGPTQueue();const cleanup=async()=>{if(shuttingDown)return;shuttingDown=true;managedChromeGuard.stop();if(chatgptQueue)await chatgptQueue.shutdown().catch(()=>{});await handle({op:'stop-all'}).catch(()=>{});socket?.close();try{if(fs.existsSync(SOCKET))fs.unlinkSync(SOCKET)}catch{}try{fs.closeSync(lockfd);fs.unlinkSync(LOCK)}catch{}process.exit(0)};process.on('SIGTERM',cleanup);process.on('SIGINT',cleanup)}
+async function main(){fs.mkdirSync(RUNTIME,{recursive:true,mode:0o700});let lockfd;try{lockfd=fs.openSync(LOCK,'wx',0o600);fs.writeFileSync(lockfd,String(process.pid))}catch{throw Error(`Node pilot lock exists: ${LOCK}`)}if(fs.existsSync(SOCKET)){try{const c=net.createConnection(SOCKET);await new Promise((res,rej)=>{c.once('connect',res);c.once('error',rej)});c.destroy();fs.closeSync(lockfd);fs.unlinkSync(LOCK);throw Error(`Node daemon socket already active: ${SOCKET}`)}catch(e){if(e.message.includes('already active'))throw e;fs.unlinkSync(SOCKET)}}socket=net.createServer(serve);await new Promise((res,rej)=>socket.listen(SOCKET,res).once('error',rej));fs.chmodSync(SOCKET,0o600);connectBrowser().catch(()=>{});managedChromeGuard.start();getChatGPTQueue();
+  const controlTimer=setInterval(()=>pollExtensionControl(),3000);
+  pollExtensionControl().catch(()=>{});
+  const cleanup=async()=>{if(shuttingDown)return;shuttingDown=true;clearInterval(controlTimer);managedChromeGuard.stop();if(chatgptQueue)await chatgptQueue.shutdown().catch(()=>{});await handle({op:'stop-all'}).catch(()=>{});socket?.close();try{if(fs.existsSync(SOCKET))fs.unlinkSync(SOCKET)}catch{}try{fs.closeSync(lockfd);fs.unlinkSync(LOCK)}catch{}process.exit(0)};process.on('SIGTERM',cleanup);process.on('SIGINT',cleanup)}
 async function request(payload,ensure=true){if(ensure)await ensureDaemon();return new Promise((resolve,reject)=>{const c=net.createConnection(SOCKET);let data='';c.setEncoding('utf8');c.on('connect',()=>c.write(JSON.stringify(payload)+'\n'));c.on('data',x=>{data+=x;if(!data.includes('\n'))return;c.end();try{const r=JSON.parse(data);r.error?reject(Error(r.error)):resolve(r)}catch(e){reject(e)}});c.on('error',reject)})}
 export async function ensureDaemon(){try{const p=await request({op:'ping'},false);if(p.ok)return p}catch{}if(!process.env.WEBHELM_CDP_URL)requireMigratedConfig();fs.mkdirSync(RUNTIME,{recursive:true,mode:0o700});if(fs.existsSync(LOCK)){let owner=0;try{owner=Number(fs.readFileSync(LOCK,'utf8').trim())}catch{};let alive=false;if(owner>0)try{process.kill(owner,0);alive=true}catch{};if(alive)throw Error(`daemon owner lock exists but socket is unreachable; refusing duplicate startup (${LOCK})`);fs.unlinkSync(LOCK)}const child=await import('node:child_process');const log=fs.openSync(path.join(RUNTIME,'session-node.log'),'a');child.spawn(process.execPath,[fileURLToPath(import.meta.url),'daemon'],{detached:true,stdio:['ignore',log,log],env:process.env}).unref();for(let i=0;i<100;i++){await delay(100);try{const p=await request({op:'ping'},false);if(p.ok)return p}catch{}}throw Error(`WebHelm Node daemon did not start; see ${path.join(RUNTIME,'session-node.log')}`)}
 if(process.argv[2]==='daemon')main().catch(e=>{console.error(e);process.exit(1)});

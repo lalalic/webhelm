@@ -175,8 +175,8 @@ test("acquireIdentity exposes tabId through controlled lease page", async () => 
   await manager.create("Harness", 2);
   const leased = await manager.acquireIdentity("Harness");
 
-  assert.equal(leased.identityTitle, `__BW_TAB_${leased.tabId}__`);
-  assert.match(leased.identityUrl, /workspace\.html\?/);
+  assert.equal(leased.identityTitle, `__WEBHELM_TAB_${leased.tabId}__`);
+  assert.match(leased.identityUrl, /helm\.html\?/);
   assert.match(leased.identityUrl, /role=lease/);
   assert.match(leased.identityUrl, new RegExp(`slot=${leased.tabId}(?:&|$)`));
 
@@ -390,7 +390,7 @@ test("inactive tabs are not reclaimed by the Extension and explicit release retu
   chrome.__setTab(leased.tabId, { lastAccessed: 1, active: false });
   assert.equal(typeof manager.reclaimStaleTabs, "undefined");
   assert.equal((await manager.status("Harness")).leased, 1);
-  assert.equal(leased.idleUrl, chrome.runtime.getURL(`workspace.html?workspace=Harness&role=idle&slot=${leased.tabId}`));
+  assert.equal(leased.idleUrl, chrome.runtime.getURL(`helm.html?workspace=Harness&role=idle&slot=${leased.tabId}`));
   await manager.release("Harness", leased.tabId);
   assert.equal((await manager.status("Harness")).idle, 1);
 });
@@ -695,4 +695,59 @@ test("extension install fallback fails closed when multiple workspaces are confi
 
   assert.equal(await manager.inheritWorkspaceForCreatedTab(setup), null);
   assert.equal(setup.groupId, -1);
+});
+
+test("default Harness migration renames only an idle legacy group and keeps tab identity", async()=>{
+  const chrome=fakeChrome(),manager=new WorkspaceManager(chrome);
+  const before=await manager.create("Harness",4);
+  await manager.create("Custom",2);
+  const originalId=before.tabIds[0];
+  const migrated=await manager.migrateDefaultWorkspace();
+  assert.deepEqual(migrated,{name:"WebHelm",migrated:true,migratedTabs:1});
+  const current=await manager.status("WebHelm");
+  assert.equal(current.initialized,true);
+  assert.equal(current.groupId,before.groupId);
+  assert.deepEqual(current.tabIds,[originalId]);
+  assert.match(current.tabs[0].url,/helm\.html\?workspace=WebHelm&role=idle/);
+  assert.equal((await manager.status("Harness")).initialized,false);
+  assert.equal((await manager.status("Custom")).initialized,true);
+  const leased=await manager.acquireIdentity("WebHelm");
+  assert.match(leased.identityUrl,/helm\.html\?workspace=WebHelm&role=lease/);
+  await manager.release("WebHelm",leased.tabId);
+  const released=await chrome.tabs.get(originalId);
+  assert.match(released.url,/helm\.html\?workspace=WebHelm&role=idle/);
+});
+
+test("default migration defers on live leases and on session count", async()=>{
+  const chrome=fakeChrome(),manager=new WorkspaceManager(chrome);
+  await manager.create("Harness",3);
+  assert.deepEqual(await manager.migrateDefaultWorkspace(1),{name:"Harness",deferred:"active-sessions"});
+  const lease=await manager.acquireIdentity("Harness");
+  assert.deepEqual(await manager.migrateDefaultWorkspace(),{name:"Harness",deferred:"leased-tabs"});
+  assert.equal((await manager.status("Harness")).initialized,true);
+  await manager.release("Harness",lease.tabId);
+  const result=await manager.migrateDefaultWorkspace();
+  assert.equal(result.migrated,true);
+  assert.equal((await manager.status("WebHelm")).initialized,true);
+});
+
+test("migration never overwrites an existing custom WebHelm group",async()=>{
+  const chrome=fakeChrome(),manager=new WorkspaceManager(chrome);
+  await manager.create("Harness",4);
+  const webhelm=await manager.create("WebHelm",3);
+  const result=await manager.migrateDefaultWorkspace();
+  assert.equal(result.legacyPreserved,true);
+  assert.equal((await manager.status("Harness")).initialized,true);
+  assert.equal((await manager.status("WebHelm")).groupId,webhelm.groupId);
+});
+
+test("legacy extension URL remains managed and releasable during migration",async()=>{
+  const chrome=fakeChrome(),manager=new WorkspaceManager(chrome);
+  const group=await manager.create("Harness",3);
+  const id=group.tabIds[0];
+  await chrome.tabs.update(id,{url:chrome.runtime.getURL("workspace.html?workspace=Harness&role=idle&slot=0")});
+  assert.equal((await manager.status("Harness")).idle,1);
+  const lease=await manager.acquireIdentity("Harness");
+  await manager.release("Harness",lease.tabId);
+  assert.equal((await manager.status("Harness")).idle,1);
 });

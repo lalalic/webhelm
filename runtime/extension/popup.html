@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WebHelm</title>
+  <style>
+    :root { color-scheme: light dark; --ink:#182234; --muted:#5f6d81; --border:#e1e7f0; --accent:#345fd5; --accent-light:#edf2ff; --warning:#ae3849; }
+    * { box-sizing: border-box; }
+    body { width:340px; min-height:250px; margin:0; padding:18px; background:light-dark(#fff,#172131); color:light-dark(var(--ink),#edf2f9); font:13px/1.5 system-ui,sans-serif; }
+    h1 { margin:0 0 2px; font-size:18px; letter-spacing:-.02em; }
+    p { margin:4px 0 12px; color:light-dark(var(--muted),#acb8c9); }
+    .stats { display:flex; gap:10px; padding:12px 0; border-block:1px solid light-dark(var(--border),#334155); margin-bottom:12px; }
+    .stat { flex:1; }
+    .stat strong { display:block; font-size:20px; }
+    .stat span { font-size:11px; color:light-dark(var(--muted),#acb8c9); }
+    button { width:100%; border:1px solid light-dark(var(--border),#40516a); background:light-dark(#fff,#22314a); color:inherit; border-radius:9px; padding:9px; cursor:pointer; font:inherit; font-weight:600; }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    button.danger { background:#ae3849; color:#fff; border-color:#ae3849; }
+    button:focus-visible { outline:3px solid var(--accent); outline-offset:2px; }
+    #confirmation { margin:8px 0; padding:11px; background:light-dark(#fff1f2,#43222a); border-radius:9px; }
+    #confirmation p { color:inherit; }
+    .buttons { display:flex; gap:8px; }
+    .session-header { margin:12px 0 6px; font-size:13px; font-weight:700; }
+    .session-list { max-height:160px; overflow:auto; }
+    .workspace-row { padding:12px 0; border-bottom:1px solid light-dark(var(--border),#334155); }
+    .workspace-title { display:flex; align-items:center; gap:8px; justify-content:space-between; }
+    .workspace-title strong { font-size:13px; overflow-wrap:anywhere; }
+    .workspace-title button { width:auto; flex-shrink:0; padding:5px 9px; font-size:11px; }
+    .workspace-details { color:light-dark(var(--muted),#acb8c9); font-size:11px; margin:4px 0; }
+    .session-row { display:flex; align-items:center; gap:8px; padding:7px 0; border-bottom:1px solid light-dark(var(--border),#334155); }
+    .session-info { min-width:0; flex:1; }
+    .session-info strong { display:block; font-size:12px; }
+    .session-info span { display:block; color:light-dark(var(--muted),#acb8c9); font-size:11px; }
+    .session-row button { width:auto; padding:5px 9px; font-size:11px; }
+    #message { min-height:20px; margin-top:10px; font-size:12px; overflow-wrap:anywhere; }
+    [hidden] { display:none !important; }
+  </style>
+  <script type="module" src="popup.mjs"></script>
+</head>
+<body>
+  <h1>WebHelm</h1>
+  <p>Managed Chrome · Workspace control</p>
+  <div class="stats" aria-live="polite">
+    <div class="stat"><strong id="available">—</strong><span>Total available slots</span></div>
+    <div class="stat"><strong id="sessions">—</strong><span>Active sessions</span></div>
+    <div class="stat"><strong id="daemon">—</strong><span>Daemon</span></div>
+  </div>
+  <div class="session-header">Workspaces</div>
+  <div id="workspace-list" class="session-list" aria-live="polite">Connecting…</div>
+  <button id="clear">Clear all sessions in all workspaces</button>
+  <section id="confirmation" hidden aria-label="Confirm clear sessions">
+    <p id="confirm-text">Stop the selected WebHelm session(s)? Tasks in progress may be interrupted. Queued jobs remain and may create new sessions.</p>
+    <div class="buttons">
+      <button id="cancel">Cancel</button>
+      <button class="danger" id="confirm">Confirm stop</button>
+    </div>
+  </section>
+  <div id="message" role="status" aria-live="polite"></div>
+</body>
+</html>

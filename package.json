@@ -17,7 +17,8 @@
   ],
   "scripts": {
     "test": "node --test test/node/*.test.mjs test/workspace-manager.test.mjs skills/webhelm/tests/*.test.mjs",
-    "test:package": "npm pack --dry-run --json"
+    "test:package": "npm pack --dry-run --json",
+    "test:e2e:extension": "node test/e2e/extension-control.e2e.mjs"
   },
   "license": "MIT",
   "repository": {

@@ -8,7 +8,11 @@ import {LOCAL_ROOT} from './config-paths.mjs';
 export const EXTENSION_ID='kkkpgmhpoeceojalkpfdidffdfnlgdog';
 export const EXTENSION_HOME=path.resolve(process.env.WEBHELM_EXTENSION_HOME || path.join(LOCAL_ROOT,'extension'));
 const SOURCE=fileURLToPath(new URL('./extension/',import.meta.url));
-const FILES=['manifest.json','service-worker.mjs','workspace-manager.mjs','workspace.html','workspace-page.mjs'];
+const FILES=[
+  'manifest.json','service-worker.mjs','workspace-manager.mjs','workspace.html','helm.html','workspace-page.mjs',
+  'control-channel.mjs','workspace-summary.mjs','popup.html','popup.mjs',
+  ...[16,32,48,128].map(size => `icons/webhelm-${size}.png`),
+];
 
 function manifest(dir){
   const data=JSON.parse(fs.readFileSync(path.join(dir,'manifest.json'),'utf8'));
@@ -19,9 +23,20 @@ function manifest(dir){
   return data;
 }
 export const extensionVersion=manifest(SOURCE).version;
+function canonicalPath(value) {
+  try { return fs.realpathSync(value || ''); }
+  catch { return path.resolve(value || ''); }
+}
+
+function listRelativeFiles(dir, prefix='') {
+  return fs.readdirSync(path.join(dir,prefix),{withFileTypes:true}).flatMap(entry => {
+    const relative=path.join(prefix,entry.name);
+    return entry.isDirectory() ? listRelativeFiles(dir,relative) : [relative];
+  });
+}
 function identical(dir){
   return fs.existsSync(path.join(dir,'manifest.json'))&&
-    JSON.stringify(fs.readdirSync(dir).sort())===JSON.stringify([...FILES].sort())&&
+    JSON.stringify(listRelativeFiles(dir).sort())===JSON.stringify([...FILES].sort())&&
     FILES.every(name=>fs.readFileSync(path.join(dir,name)).equals(fs.readFileSync(path.join(SOURCE,name))));
 }
 // Actions checkout contains this self-managed directory, but Git must never publish it.
@@ -44,7 +59,10 @@ export function stageExtension(dir=EXTENSION_HOME){
   const stage=fs.mkdtempSync(path.join(root,'.webhelm-extension-stage-'));
   let backup;
   try {
-    for(const filename of FILES)fs.copyFileSync(path.join(SOURCE,filename),path.join(stage,filename));
+    for(const filename of FILES){
+      fs.mkdirSync(path.dirname(path.join(stage,filename)),{recursive:true});
+      fs.copyFileSync(path.join(SOURCE,filename),path.join(stage,filename));
+    }
     if(!identical(stage))throw Error('WebHelm extension staged content mismatch');
     if(fs.existsSync(target)){
       backup=path.join(root,`.webhelm-extension-backup-${process.pid}-${crypto.randomBytes(4).toString('hex')}`);
@@ -67,7 +85,7 @@ export async function ensureExtensionLoaded(browser, {skip=false,extensionDir=EX
   try{
     const state=await browser.send('Extensions.getExtensions');
     modern=true;installed=state.extensions?.find(e=>e.id===EXTENSION_ID);
-    if(!installed || !installed.enabled || installed.version!==version || path.resolve(installed.path||'')!==dir){
+    if(!installed || !installed.enabled || installed.version!==version || canonicalPath(installed.path)!==canonicalPath(dir)){
       if(!allowUpdate)throw Error('Extension reload deferred: active browser Sessions must finish');
       const loaded=await browser.send('Extensions.loadUnpacked',{path:dir});
       if(loaded.id!==EXTENSION_ID)throw Error('Chrome loaded an unexpected extension ID');
@@ -83,7 +101,7 @@ export async function ensureExtensionLoaded(browser, {skip=false,extensionDir=EX
   let target=targetInfos.find(t=>t.type==='service_worker'&&t.url.startsWith(prefix));
   let temporary=false;
   if(!target){
-    const created=await browser.send('Target.createTarget',{url:`${prefix}workspace.html?webhelm_wakeup=1`,background:true});
+    const created=await browser.send('Target.createTarget',{url:`${prefix}helm.html?webhelm_wakeup=1`,background:true});
     target={targetId:created.targetId};temporary=true;
   }
   let attached;

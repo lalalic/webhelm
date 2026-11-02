@@ -29,6 +29,16 @@ npx --yes webhelm@latest session stop SESSION_ID
 
 Use `npx skills add lalalic/webhelm --skill webhelm` to install agent guidance. The Extension is bundled with the npm Runtime and staged by WebHelm Daemon at `~/.local/webhelm/extension`. The Skill lives **in this repo** at `skills/webhelm/SKILL.md`. No Chrome Web Store publication or manual Extension installation is required.
 
+## WebHelm Chrome Extension control panel
+
+The daemon-managed Chrome Extension is installed from the npm Runtime and does not require the Chrome Web Store. Click the WebHelm toolbar icon to see daemon connectivity, each configured workspace's available capacity and current Session count. The badge shows total available slots across configured workspaces, including unallocated lazy slots; `!` means the daemon heartbeat is stale and `?` means capacity cannot be determined.
+
+The popup has a confirmation step to stop one Session, clear Sessions in one workspace, or clear Sessions across all workspaces. These actions are executed by the same Node daemon as the CLI, over the existing CDP-backed Extension RPC. No shell access or HTTP listener is granted to the Extension. The persistent ChatGPT queue is not deleted, and queued work may create new Sessions afterward.
+
+New installations use the default Chrome tab group `WebHelm` and the idle page `helm.html`. Legacy `Harness` default groups migrate only when their tabs are idle. Custom workspace names are unchanged; the old `workspace.html` path and lease titles remain readable until their Sessions finish. Closing an allocated Session returns its managed tabs to the idle page, retaining physical Chrome targets, while unleased popup children are closed. Do not manually remove active managed tabs.
+
+For a real browser integration check on macOS, run `node test/e2e/extension-control.e2e.mjs`; it creates a temporary isolated Chrome profile and daemon and does not touch the current production Sessions.
+
 The Actions checkout is `~/.local/webhelm`, with site modules at `~/.local/webhelm/platforms`. Setup clones if absent, then reuses that checkout without discarding local modifications. Run `platform sync` for new commits. For a verified local Action fix, `platform publish --message "..."` tests, commits and pushes only the action changes to the separate repo.
 
 ## Architecture and compatibility

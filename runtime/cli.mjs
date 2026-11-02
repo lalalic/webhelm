@@ -25,9 +25,9 @@ Usage:
   webhelm migrate  # after stopping Chrome and the old WebHelm daemon
   webhelm setup
   webhelm status
-  webhelm ensure  # verify/recover managed Chrome and Harness, not just daemon ping
+  webhelm ensure  # verify/recover managed Chrome and WebHelm group, not just daemon ping
   webhelm capacity [--workspace NAME]
-  webhelm session start [--url URL]
+  webhelm session start [--workspace NAME] [--url URL]
   webhelm session list
   webhelm session heartbeat SESSION_ID  # keep a working Session alive
   webhelm session exec SESSION_ID [--code-file FILE]   # JavaScript

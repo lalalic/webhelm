@@ -12,7 +12,7 @@ const source=path.join(root,'runtime/extension');
 
 test('bundled MV3 extension parses before npm publication',()=>{
   assert.equal(extensionVersion,JSON.parse(readFileSync(path.join(source,'manifest.json'),'utf8')).version);
-  for(const name of ['service-worker.mjs','workspace-manager.mjs','workspace-page.mjs']){
+  for(const name of ['service-worker.mjs','workspace-manager.mjs','workspace-page.mjs','control-channel.mjs','workspace-summary.mjs','popup.mjs']){
     const r=spawnSync(process.execPath,['--check',path.join(source,name)],{encoding:'utf8'});
     assert.equal(r.status,0,`${name}: ${r.stderr}`);
   }
@@ -28,9 +28,9 @@ test('daemon stages extension at stable path, idempotent, replaces stale valid c
   assert.equal(first.updated,true);
   assert.deepEqual(readdirSync(destination).sort(),readdirSync(source).sort());
   assert.equal(stageExtension(destination).updated,false);
-  writeFileSync(path.join(destination,'workspace.html'),'outdated but same identity');
+  writeFileSync(path.join(destination,'helm.html'),'outdated but same identity');
   assert.equal(stageExtension(destination).updated,true);
-  assert.equal(readFileSync(path.join(destination,'workspace.html'),'utf8'),readFileSync(path.join(source,'workspace.html'),'utf8'));
+  assert.equal(readFileSync(path.join(destination,'helm.html'),'utf8'),readFileSync(path.join(source,'helm.html'),'utf8'));
   assert.match(readFileSync(path.join(dir,'.git/info/exclude'),'utf8'),/\/extension\//);
   assert.equal(readdirSync(dir).some(n=>n.includes('stage-')||n.includes('backup-')),false);
 });
@@ -83,4 +83,30 @@ test('Chrome 138 uses startup compatibility flags, Chrome 156 uses CDP only',()=
   assert.ok(modern.includes('--remote-debugging-port=9222'));
   assert.equal(chromeMajorFromVersion('Google Chrome for Testing 138.0.7204.183'),138);
   assert.throws(()=>chromeMajorFromVersion('unknown browser'),/Cannot determine/);
+});
+
+test('Chrome-reported canonical extension path avoids redundant reload',async t=>{
+  const root=mkdtempSync(path.join(os.tmpdir(),'webhelm-canonical-path-'));
+  t.after(()=>rmSync(root,{recursive:true,force:true}));
+  const ext=path.join(root,'extension');
+  stageExtension(ext);
+  // macOS may report /private/var while our configured path is /var.
+  const canonical=await import('node:fs').then(fs=>fs.realpathSync(ext));
+  let reloads=0;
+  const fake={async send(method){
+    if(method==='Extensions.getExtensions')return {extensions:[{
+      id:EXTENSION_ID,enabled:true,version:extensionVersion,path:canonical,
+    }]};
+    if(method==='Extensions.loadUnpacked'){reloads++;return {id:EXTENSION_ID}};
+    if(method==='Target.getTargets')return {targetInfos:[{
+      targetId:'worker',type:'service_worker',
+      url:`chrome-extension://${EXTENSION_ID}/service-worker.mjs`,
+    }]};
+    if(method==='Target.attachToTarget')return {sessionId:'test'};
+    if(method==='Runtime.evaluate')return {result:{value:extensionVersion}};
+    return {};
+  }};
+  const result=await ensureExtensionLoaded(fake,{extensionDir:ext});
+  assert.equal(result.method,'cdp');
+  assert.equal(reloads,0);
 });

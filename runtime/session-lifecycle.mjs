@@ -8,7 +8,7 @@ export function staleSession(session, now = Date.now(), ttl = SESSION_IDLE_MS) {
 
 export function idleUrlFromIdentity(identityUrl, tabId) {
   const url = new URL(identityUrl);
-  if (url.protocol !== 'chrome-extension:' || !url.pathname.endsWith('/workspace.html')) {
+  if (url.protocol !== 'chrome-extension:' || !['/workspace.html','/helm.html'].includes(url.pathname)) {
     throw new Error('invalid extension identity URL');
   }
   url.searchParams.set('role', 'idle');

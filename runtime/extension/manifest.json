@@ -1,14 +1,15 @@
 {
   "manifest_version": 3,
-  "name": "Browser Workspace",
-  "version": "0.3.3",
+  "name": "WebHelm",
+  "version": "0.4.0",
   "description": "Own named Chrome tab-group workspaces and lazy reusable tab pools for browser agents.",
   "permissions": [
     "storage",
     "tabs",
     "tabGroups",
     "webNavigation",
-    "contextMenus"
+    "contextMenus",
+    "alarms"
   ],
   "host_permissions": [
     "http://*/*",
@@ -18,8 +19,11 @@
     "service_worker": "service-worker.mjs",
     "type": "module"
   },
+  "icons": { "16": "icons/webhelm-16.png", "32": "icons/webhelm-32.png", "48": "icons/webhelm-48.png", "128": "icons/webhelm-128.png" },
   "action": {
-    "default_title": "Browser Workspace"
+    "default_title": "WebHelm",
+    "default_popup": "popup.html",
+    "default_icon": { "16": "icons/webhelm-16.png", "32": "icons/webhelm-32.png" }
   },
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtovrqHYRxYDBSofmlykO8RDtsePhg8KV1fmq07nnhtbmYiNXAnIKrgRyLHeZv+cwm9DSgP5Ig7FDJ7Q6XrSi+Z1FpU6Y/SJkX5Rozo0oAJcX1ggoGD3vxpfHZThSSG/vRSnD8pH3XFf2nDUD7QP6GXc8dX9lN5pslRUNh1J4UCAOcu2UpPSsvpA+wPPTZr2JYzm3AevFXkQM6y0B+4exgw/Hy21ULST4nLWZihuCSu+gfWnftiTNzUPHtseRJcrpd0zT0R46d+OC+JRwXMVBpYSksDDtOXgERwMBSZf+vvskrEqYoXKN8Z9+Rrr7y9PTOvlwQioVLEDEjr9e7RIegQIDAQAB"
 }

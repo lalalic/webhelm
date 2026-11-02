@@ -42,11 +42,11 @@ export class WorkspaceManager {
   }
 
   idleUrl(workspace, slot) {
-    return this.chrome.runtime.getURL(`workspace.html?${queryString(workspace, slot)}`);
+    return this.chrome.runtime.getURL(`helm.html?${queryString(workspace, slot)}`);
   }
 
   identityTitle(tabId) {
-    return `__BW_TAB_${tabId}__`;
+    return `__WEBHELM_TAB_${tabId}__`;
   }
 
   identityUrl(workspace, tabId) {
@@ -55,14 +55,15 @@ export class WorkspaceManager {
       role: "lease",
       slot: String(tabId),
     }).toString();
-    return this.chrome.runtime.getURL(`workspace.html?${query}`);
+    return this.chrome.runtime.getURL(`helm.html?${query}`);
   }
 
   parseManagedUrl(url) {
     try {
       const parsed = new URL(url);
-      const own = new URL(this.chrome.runtime.getURL("workspace.html"));
-      if (parsed.origin !== own.origin || parsed.pathname !== own.pathname) return null;
+      const own = new URL(this.chrome.runtime.getURL("helm.html"));
+      if (parsed.origin !== own.origin ||
+          !["/helm.html", "/workspace.html"].includes(parsed.pathname)) return null;
       return {
         workspace: parsed.searchParams.get("workspace") || "",
         role: parsed.searchParams.get("role") || "",
@@ -466,6 +467,44 @@ export class WorkspaceManager {
     return { workspaces: result };
   }
 
+  // The legacy default group is only renamed after all its tabs return idle.
+  // Preserve configured custom workspaces, old leased tabs and Chrome tab IDs.
+  async migrateDefaultWorkspace(activeLegacySessions = 0) {
+    const oldName = "Harness", newName = "WebHelm";
+    const config = await this.loadConfig();
+    if (!config.workspaces[oldName]) return {name: newName, migrated: false};
+    if (config.workspaces[newName]) return {name: newName, migrated: false, legacyPreserved: true};
+    if (activeLegacySessions > 0) return {name: oldName, deferred: "active-sessions"};
+    const group = await this.workspaceGroup(oldName);
+    const tabs = group ? await this.groupTabs(group.id) : [];
+    if (group && this.classify(oldName, tabs).leased.length)
+      return {name: oldName, deferred: "leased-tabs"};
+
+    // URL ownership and group identity change together. If navigation fails,
+    // restore both before retrying so no lease is silently adopted.
+    const updated = [];
+    try {
+      // Mark existing legacy tabs as owned before their URLs change. Chrome
+      // can emit grouping callbacks mid-migration.
+      for (const tab of tabs) this.markOwned(tab.id);
+      if (group) await this.chrome.tabGroups.update(group.id, {title: newName});
+      for (const tab of tabs) {
+        await this.chrome.tabs.update(tab.id, {url: this.idleUrl(newName, tab.id), active: false});
+        updated.push(tab);
+      }
+      config.workspaces[newName] = config.workspaces[oldName];
+      delete config.workspaces[oldName];
+      await this.saveConfig(config);
+      return {name: newName, migrated: true, migratedTabs: updated.length};
+    } catch(error) {
+      if (group) await this.chrome.tabGroups.update(group.id, {title: oldName}).catch(() => {});
+      for (const tab of updated) {
+        await this.chrome.tabs.update(tab.id,{url: tab.url,active:false}).catch(() => {});
+      }
+      throw error;
+    }
+  }
+
   async ensure(name, defaultPoolSize = 8) {
     const normalizedName = normalizeWorkspaceName(name);
     const { entry } = await this.configuredWorkspace(normalizedName);
@@ -544,7 +583,7 @@ export class WorkspaceManager {
         active: false,
       });
       // Group reconciliation can fire before the extension idle URL is visible.
-      // Mark ownership first so a legitimate Browser Harness lease is not ejected.
+      // Mark ownership first so a legitimate WebHelm lease is not ejected.
       this.markOwned(tab.id);
       await this.chrome.tabs.group({ groupId: ready.groupId, tabIds: [tab.id] });
       tab = await this.waitForIdleTab(tab.id, normalizedName);
@@ -650,6 +689,7 @@ export class WorkspaceManager {
     if (method === "workspace.ensure") return await this.ensure(args.name, args.poolSize);
     if (method === "workspace.status") return await this.status(args.name);
     if (method === "workspace.list") return await this.list();
+    if (method === "workspace.migrateDefault") return await this.migrateDefaultWorkspace(Number(args.activeLegacySessions || 0));
     if (method === "workspace.acquire") return await this.acquire(args.name, args.url);
     if (method === "workspace.acquireIdentity") return await this.acquireIdentity(args.name);
     if (method === "workspace.release") return await this.release(args.name, args.tabId);
