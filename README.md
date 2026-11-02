@@ -31,7 +31,7 @@ Use `npx skills add lalalic/webhelm --skill webhelm` to install agent guidance. 
 
 ## WebHelm Chrome Extension control panel
 
-The daemon-managed Chrome Extension is installed from the npm Runtime and does not require the Chrome Web Store. Click the WebHelm toolbar icon to see daemon connectivity, each configured workspace's available capacity and current Session count. The badge shows total available slots across configured workspaces, including unallocated lazy slots; `!` means the daemon heartbeat is stale and `?` means capacity cannot be determined.
+The daemon-managed Chrome Extension is installed from the npm Runtime and does not require the Chrome Web Store. Click the WebHelm toolbar icon to see daemon connectivity, each configured workspace's available capacity and current Session count. The toolbar badge shows the number of **active daemon Sessions** across all workspaces (including `0` when idle). `!` means the daemon heartbeat is stale and `?` means the Session count is unknown. The popup separately shows pool availability and idle tabs.
 
 The popup has a confirmation step to stop one Session, clear Sessions in one workspace, or clear Sessions across all workspaces. These actions are executed by the same Node daemon as the CLI, over the existing CDP-backed Extension RPC. No shell access or HTTP listener is granted to the Extension. The persistent ChatGPT queue is not deleted, and queued work may create new Sessions afterward.
 

@@ -106,6 +106,8 @@ try {
   const first=await Promise.race([request({op:'start'}),sleep(15000).then(()=>{throw Error('Isolated daemon Session did not start');})]);
   assert.equal(first.workspace,'WebHelm');
   workerSid=await attach(worker.targetId);
+  const badgeText=()=>evaluate(workerSid,'chrome.action.getBadgeText({})');
+  assert.equal(await waitFor(async()=>await badgeText()==='1'?'1':null,'badge one Session'),'1');
   let groups=await rpc(workerSid,'workspace.list');
   assert.ok(groups.workspaces.some(w=>w.name==='WebHelm'));
   assert.ok(!groups.workspaces.some(w=>w.name==='Harness'));
@@ -123,6 +125,7 @@ try {
   const info=(await cdp('Target.getTargetInfo',{targetId:preservedTargetId})).targetInfo;
   assert.equal(info.targetId,preservedTargetId);
   assert.equal(info.url,`chrome-extension://${EXTENSION_ID}/helm.html?workspace=WebHelm&role=idle`);
+  assert.equal(await waitFor(async()=>await badgeText()==='0'?'0':null,'badge zero Sessions'),'0');
   console.log('SESSION CLOSE PASS: original CDP tab retained at helm.html idle:',preservedTargetId);
 
   const preLease=await rpc(workerSid,'workspace.acquireIdentity',{name:'WebHelm'});
@@ -134,6 +137,7 @@ try {
   const custom=await request({op:'start',workspace:'Custom'});
   assert.equal(main.workspace,'WebHelm');
   assert.equal(custom.workspace,'Custom');
+  assert.equal(await waitFor(async()=>await badgeText()==='2'?'2':null,'badge two Sessions'),'2');
   const popupTarget=(await cdp('Target.createTarget',{url:`chrome-extension://${EXTENSION_ID}/popup.html`})).targetId;
   const popupSid=await attach(popupTarget);
   const displayed=await waitFor(async()=>{
@@ -148,6 +152,7 @@ try {
   const after=await waitFor(async()=>(await request({op:'list'})).sessions, 'group stop').then(async()=>
     waitFor(async()=>{const r=await request({op:'list'});return r.sessions.length===1?r:null;},'Custom stop'));
   assert.equal(after.sessions[0].session_id,main.session_id);
+  assert.equal(await waitFor(async()=>await badgeText()==='1'?'1':null,'badge one remaining Session'),'1');
   const stillMain=(await cdp('Target.getTargetInfo',{targetId:main.target_id})).targetInfo;
   assert.equal(stillMain.targetId,main.target_id);
   const customIdle=(await cdp('Target.getTargetInfo',{targetId:custom.target_id})).targetInfo;
@@ -161,6 +166,8 @@ try {
   console.log('POPUP RESULT:',status);
   const stopMain=await request({op:'stop',session_id:main.session_id});
   assert.equal(stopMain.returned_to_idle,true);
+  assert.equal(await waitFor(async()=>await badgeText()==='0'?'0':null,'badge final zero'),'0');
+  console.log('BADGE PASS: 1 → 0 → 2 → 1 → 0 across real daemon sessions');
   console.log('E2E PASS');
 } finally {
   ws?.close();

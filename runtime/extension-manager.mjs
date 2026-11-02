@@ -10,7 +10,7 @@ export const EXTENSION_HOME=path.resolve(process.env.WEBHELM_EXTENSION_HOME || p
 const SOURCE=fileURLToPath(new URL('./extension/',import.meta.url));
 const FILES=[
   'manifest.json','service-worker.mjs','workspace-manager.mjs','workspace.html','helm.html','workspace-page.mjs',
-  'control-channel.mjs','workspace-summary.mjs','popup.html','popup.mjs',
+  'control-channel.mjs','workspace-summary.mjs','session-badge.mjs','popup.html','popup.mjs',
   ...[16,32,48,128].map(size => `icons/webhelm-${size}.png`),
 ];
 

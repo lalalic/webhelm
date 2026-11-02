@@ -12,7 +12,7 @@ const source=path.join(root,'runtime/extension');
 
 test('bundled MV3 extension parses before npm publication',()=>{
   assert.equal(extensionVersion,JSON.parse(readFileSync(path.join(source,'manifest.json'),'utf8')).version);
-  for(const name of ['service-worker.mjs','workspace-manager.mjs','workspace-page.mjs','control-channel.mjs','workspace-summary.mjs','popup.mjs']){
+  for(const name of ['service-worker.mjs','workspace-manager.mjs','workspace-page.mjs','control-channel.mjs','workspace-summary.mjs','session-badge.mjs','popup.mjs']){
     const r=spawnSync(process.execPath,['--check',path.join(source,name)],{encoding:'utf8'});
     assert.equal(r.status,0,`${name}: ${r.stderr}`);
   }

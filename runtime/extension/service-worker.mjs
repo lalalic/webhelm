@@ -1,6 +1,7 @@
 import { WorkspaceManager } from "./workspace-manager.mjs";
 import { ControlChannel } from "./control-channel.mjs";
 import { summarizeWorkspaces } from "./workspace-summary.mjs";
+import { sessionBadge } from "./session-badge.mjs";
 
 const manager = new WorkspaceManager(chrome);
 const control = new ControlChannel(chrome);
@@ -8,19 +9,11 @@ const closingWindowIds = new Set();
 let badgeTimer = null;
 
 async function refreshBadge() {
-  const state = await control.status();
-  const summary = summarizeWorkspaces((await manager.list()).workspaces, state.sessions);
-  const available = summary.totalAvailable;
-  await chrome.action.setBadgeText({
-    text: !state.connected ? "!" : available === null ? "?" : available > 99 ? "99+" : String(available),
-  });
-  await chrome.action.setBadgeBackgroundColor({
-    color: !state.connected || available === null ? "#667085"
-      : available === 0 ? "#A43145" : "#345FD5",
-  });
-  await chrome.action.setTitle({title: state.connected
-    ? `WebHelm — ${available === null ? "unknown" : available} available slot(s) across ${summary.workspaces.length} workspace(s)`
-    : "WebHelm — daemon offline or status stale"});
+  const {connected, sessionCount} = await control.status();
+  const badge = sessionBadge({connected, sessionCount});
+  await chrome.action.setBadgeText({text: badge.text});
+  await chrome.action.setBadgeBackgroundColor({color: badge.color});
+  await chrome.action.setTitle({title: badge.title});
 }
 
 function scheduleBadge() {
