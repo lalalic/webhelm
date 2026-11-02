@@ -45,6 +45,17 @@ test('setup/sync/publish commands are visible',()=>{
   assert.match(result.stdout,/webhelm capacity/);
 });
 
+test('queue management remains internal and cannot be invoked through the CLI',()=>{
+  const help=run('--help');
+  assert.equal(help.status,0,help.stderr);
+  assert.doesNotMatch(help.stdout,/webhelm queue/);
+  for(const args of [['queue','list'],['queue','cancel','test-id'],['help','queue']]){
+    const result=run(...args);
+    assert.equal(result.status,1,args.join(' '));
+    assert.match(result.stderr,/unknown (command|help topic):/);
+  }
+});
+
 test('CLI explicitly rejects --workspace and does not expose Workspace provisioning commands',()=>{
   const help=run('--help');
   assert.doesNotMatch(help.stdout,/--workspace/);

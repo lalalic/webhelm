@@ -149,15 +149,6 @@ async function main(args = process.argv.slice(2)) {
     // reload an older daemon's Extension while its Sessions are still active.
     return emit(await request(payload));
   }
-  if (group === 'queue') {
-    if (command === 'list') return emit(await request({op:'queue-list'}));
-    if (command === 'cancel') {
-      const queueId=args[2];
-      if (!queueId) throw Error('queue cancel requires QUEUE_ID');
-      return emit(await request({op:'queue-cancel',queue_id:queueId}));
-    }
-    throw Error('queue requires list or cancel QUEUE_ID');
-  }
   if (group === 'session') {
     if (command === 'start') return emit(await request({op:'start', workspace:CLI_WORKSPACE, url:arg(args,'--url')}));
     if (command === 'list') {
