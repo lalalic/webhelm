@@ -64,9 +64,9 @@ async function controlRpc(method, args) {
     case "workspace.control.queueCancel":
       return control.requestQueueCancel(args.queueId);
     case "workspace.control.heartbeat":
-      return control.heartbeat(args.sessions);
+      return control.heartbeat(args.sessions, args.queue);
     case "workspace.control.poll": {
-      const result = await control.poll(args.sessions);
+      const result = await control.poll(args.sessions, args.queue);
       scheduleBadge();
       return result;
     }
