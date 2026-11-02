@@ -1,4 +1,4 @@
-import {spawn} from 'node:child_process';
+import {spawn,spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -134,10 +134,33 @@ try {
   assert.equal(preLease.idleUrl,`chrome-extension://${EXTENSION_ID}/helm.html?workspace=WebHelm&role=idle`);
   await rpc(workerSid,'workspace.release',{name:'WebHelm',tabId:preLease.tabId});
 
+  await assert.rejects(request({op:'start',workspace:'VlogMusic'}),/does not exist|must provision/);
+  const missing=(await rpc(workerSid,'workspace.list')).workspaces;
+  assert.ok(!missing.some(w=>w.name==='VlogMusic'),'refused start did not create a Workspace');
+  // An extension page used by a browser Session must not provision groups.
+  const untrustedPage=(await cdp('Target.createTarget',{url:`chrome-extension://${EXTENSION_ID}/popup.html`})).targetId;
+  const untrustedSid=await attach(untrustedPage);
+  const untrusted=await waitFor(async()=>evaluate(untrustedSid,`chrome.runtime.sendMessage({method:'workspace.create',args:{name:'VlogMusic'}})`),'restricted extension management');
+  assert.equal(untrusted.ok,false);
+  assert.match(untrusted.error.message,/application daemon API/);
+  await cdp('Target.closeTarget',{targetId:untrustedPage});
+  const appCreated=await request({op:'workspace-create',name:'Custom',pool_size:8});
+  assert.equal(appCreated.name,'Custom');
   const main=await request({op:'start'});
   const custom=await request({op:'start',workspace:'Custom'});
   assert.equal(main.workspace,'WebHelm');
   assert.equal(custom.workspace,'Custom');
+  const runCli=(...args)=>spawnSync(process.execPath,[path.join(repo,'runtime/cli.mjs'),...args],{
+    encoding:'utf8',env,timeout:12000,
+  });
+  const listed=runCli('session','list');
+  assert.equal(listed.status,0,listed.stderr);
+  assert.deepEqual(JSON.parse(listed.stdout).sessions.map(s=>s.session_id),[main.session_id]);
+  const denied=runCli('session','stop',custom.session_id);
+  assert.equal(denied.status,1,'CLI may not stop an application-owned Session');
+  assert.match(denied.stderr,/not owned by the WebHelm CLI workspace/);
+  const helpers=await request({op:'exec',session_id:main.session_id,code:"console.log(typeof workspace_create,typeof workspace_resize,typeof workspace_delete)"});
+  assert.equal(helpers.stdout,'undefined undefined undefined');
   assert.equal(await waitFor(async()=>await badgeText()==='2'?'2':null,'badge two Sessions'),'2');
   const popupTarget=(await cdp('Target.createTarget',{url:`chrome-extension://${EXTENSION_ID}/popup.html`})).targetId;
   const popupSid=await attach(popupTarget);
@@ -192,6 +215,15 @@ try {
   const buttonsDisabled=await waitFor(async()=>await evaluate(popupSid,`[...document.querySelectorAll('.workspace-title button')].length>0 && [...document.querySelectorAll('.workspace-title button')].every(button=>button.disabled)`)?true:null,'disabled clear-session buttons at zero');
   assert.equal(buttonsDisabled,true);
   console.log('BADGE PASS: 1 → 0 → 2 → 1 → 0 across real daemon sessions');
+  const appOwned=await request({op:'start',workspace:'Custom'});
+  const cliOwned=await request({op:'start',workspace:'WebHelm'});
+  const stoppedByCli=runCli('session','stop','--all');
+  assert.equal(stoppedByCli.status,0,stoppedByCli.stderr);
+  const remaining=(await request({op:'list'})).sessions;
+  assert.deepEqual(remaining.map(s=>s.session_id),[appOwned.session_id]);
+  assert.ok(!remaining.some(s=>s.session_id===cliOwned.session_id));
+  await request({op:'stop',session_id:appOwned.session_id});
+  console.log('CLI SCOPE PASS: CLI stop --all stops WebHelm, leaves app-owned Custom intact');
   console.log('E2E PASS');
 } finally {
   ws?.close();

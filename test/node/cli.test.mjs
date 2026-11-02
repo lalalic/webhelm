@@ -44,3 +44,21 @@ test('setup/sync/publish commands are visible',()=>{
   assert.match(result.stdout,/webhelm platform publish/);
   assert.match(result.stdout,/webhelm capacity/);
 });
+
+test('CLI explicitly rejects --workspace and does not expose Workspace provisioning commands',()=>{
+  const help=run('--help');
+  assert.doesNotMatch(help.stdout,/--workspace/);
+  for(const args of [
+    ['session','start','--workspace','VlogMusic'],
+    ['session','start','--workspace=Neo'],
+    ['capacity','--workspace','Neo'],
+    ['session','stop','--workspace','Neo'],
+  ]){
+    const result=run(...args);
+    assert.equal(result.status,1,args.join(' '));
+    assert.match(result.stderr,/CLI is restricted to the WebHelm workspace/);
+  }
+  const forbidden=run('workspace','create','VlogMusic');
+  assert.equal(forbidden.status,1);
+  assert.match(forbidden.stderr,/unknown command:/);
+});

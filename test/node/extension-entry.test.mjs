@@ -110,3 +110,19 @@ test('Chrome-reported canonical extension path avoids redundant reload',async t=
   assert.equal(result.method,'cdp');
   assert.equal(reloads,0);
 });
+
+test('source-mode extension resolves directly to source without staging',()=>{
+  const snippet=`import {stageExtension,EXTENSION_HOME} from ${JSON.stringify(new URL('../../runtime/extension-manager.mjs',import.meta.url).href)};
+import fs from 'node:fs';
+const result=stageExtension();
+console.log(JSON.stringify({source:fs.realpathSync(EXTENSION_HOME),path:fs.realpathSync(result.path),sourceMode:result.sourceMode,updated:result.updated}));`;
+  const child=spawnSync(process.execPath,['--input-type=module','--eval',snippet],{
+    encoding:'utf8',env:{...process.env,WEBHELM_SOURCE_MODE:'1',WEBHELM_EXTENSION_HOME:''},
+  });
+  assert.equal(child.status,0,child.stderr);
+  const state=JSON.parse(child.stdout.trim());
+  assert.equal(state.source,path.resolve(source));
+  assert.equal(state.path,path.resolve(source));
+  assert.equal(state.sourceMode,true);
+  assert.equal(state.updated,false);
+});

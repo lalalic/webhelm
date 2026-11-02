@@ -6,8 +6,10 @@ import {fileURLToPath} from 'node:url';
 import {LOCAL_ROOT} from './config-paths.mjs';
 
 export const EXTENSION_ID='kkkpgmhpoeceojalkpfdidffdfnlgdog';
-export const EXTENSION_HOME=path.resolve(process.env.WEBHELM_EXTENSION_HOME || path.join(LOCAL_ROOT,'extension'));
 const SOURCE=fileURLToPath(new URL('./extension/',import.meta.url));
+const SOURCE_MODE=process.env.WEBHELM_SOURCE_MODE==='1';
+export const EXTENSION_HOME=path.resolve(process.env.WEBHELM_EXTENSION_HOME ||
+  (SOURCE_MODE ? SOURCE : path.join(LOCAL_ROOT,'extension')));
 const FILES=[
   'manifest.json','service-worker.mjs','workspace-manager.mjs','workspace.html','helm.html','workspace-page.mjs',
   'control-channel.mjs','workspace-summary.mjs','session-badge.mjs','popup.html','popup.mjs',
@@ -50,6 +52,10 @@ function excludeFromActionsGit(dir){
 export function stageExtension(dir=EXTENSION_HOME){
   const target=path.resolve(dir);
   const bundled=manifest(SOURCE);
+  // Neo Master works from its Git checkout. Never stage or overwrite source
+  // files, and never accept arbitrary symlinks as a deployment directory.
+  if(SOURCE_MODE && canonicalPath(target)===canonicalPath(SOURCE))
+    return {path:SOURCE,version:bundled.version,updated:false,sourceMode:true};
   if(fs.existsSync(target)&&fs.lstatSync(target).isSymbolicLink())throw Error('Refusing to replace extension symlink');
   if(fs.existsSync(target)&&identical(target))return {path:target,version:bundled.version,updated:false};
   if(fs.existsSync(target))manifest(target); // Never replace unrelated content.

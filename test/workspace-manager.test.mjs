@@ -233,6 +233,7 @@ test("delete rejects leased tabs unless forced and removes persisted workspace",
   const chrome = fakeChrome();
   const manager = new WorkspaceManager(chrome);
 
+  await manager.create("Relay");
   const leased = await manager.acquire("Relay", "https://example.com/");
   await assert.rejects(
     () => manager.delete("Relay"),
@@ -368,6 +369,7 @@ test("closing a workspace tab does not eagerly recreate it", async () => {
   const chrome = fakeChrome();
   const manager = new WorkspaceManager(chrome);
 
+  await manager.create("Harness");
   const leased = await manager.acquire("Harness", "https://example.com/");
   await chrome.tabs.remove(leased.tabId);
 
@@ -401,6 +403,7 @@ test("Chrome-created unrelated tab is removed from a configured workspace group"
 test("inactive tabs are not reclaimed by the Extension and explicit release returns idle", async () => {
   const chrome = fakeChrome();
   const manager = new WorkspaceManager(chrome);
+  await manager.create("Harness");
   const leased = await manager.acquireIdentity("Harness");
   chrome.__setTab(leased.tabId, { lastAccessed: 1, active: false });
   assert.equal(typeof manager.reclaimStaleTabs, "undefined");
@@ -459,6 +462,8 @@ test("releaseAll releases every leased tab across workspaces", async () => {
   const chrome = fakeChrome();
   const manager = new WorkspaceManager(chrome);
 
+  await manager.create("Harness");
+  await manager.create("Research");
   const a1 = await manager.acquire("Harness", "https://example.com/a1");
   const a2 = await manager.acquire("Harness", "https://example.com/a2");
   const b1 = await manager.acquire("Research", "https://example.com/b1");
@@ -493,6 +498,7 @@ test("webNavigation target inherits ownership from an owned source tab", async (
   const chrome = fakeChrome();
   const manager = new WorkspaceManager(chrome);
 
+  await manager.create("Harness");
   const source = await manager.acquire("Harness", "https://news.sina.com.cn/china/");
   const target = await chrome.tabs.create({
     url: "https://news.sina.com.cn/c/target-blank.shtml",
@@ -769,6 +775,7 @@ test("legacy extension URL remains managed and releasable during migration",asyn
 
 test('independent leased tab IDs return to identical idle URLs without losing ownership', async()=>{
   const chrome=fakeChrome(),manager=new WorkspaceManager(chrome);
+  await manager.create('WebHelm');
   const a=await manager.acquireIdentity('WebHelm');
   const b=await manager.acquireIdentity('WebHelm');
   assert.notEqual(a.tabId,b.tabId);
@@ -832,4 +839,18 @@ test("legacy Harness migration positions the renamed default group at the front"
   assert.equal(migrated.migrated,true);
   assert.equal((await chrome.tabs.get(harness.tabIds[0])).index,0);
   assert.equal((await manager.status("WebHelm")).groupId,harness.groupId);
+});
+
+test('agent lease never creates an unknown or missing app Workspace', async()=>{
+  const chrome=fakeChrome(),manager=new WorkspaceManager(chrome);
+  const before=(await manager.list()).workspaces;
+  assert.deepEqual(before,[]);
+  await assert.rejects(()=>manager.acquireIdentity('VlogMusic'),/does not exist/);
+  await assert.rejects(()=>manager.acquire('VlogMusic','https://example.com'),/does not exist/);
+  assert.deepEqual((await manager.list()).workspaces,[]);
+  await manager.create('Neo',4);
+  await assert.rejects(()=>manager.acquireIdentity('VlogMusic'),/does not exist/);
+  const lease=await manager.acquireIdentity('Neo');
+  assert.equal(lease.workspace,'Neo');
+  await manager.release('Neo',lease.tabId);
 });

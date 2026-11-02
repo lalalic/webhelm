@@ -36,23 +36,23 @@ export function stageRuntimeForLoginGuard({home=os.homedir(),source=fileURLToPat
 }
 
 const escapeXml=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[c]));
-export function loginGuardDefinition(home=os.homedir(),{cliPath=path.join(home,'.local/bin/webhelm'),nodePath=null}={}) {
+export function loginGuardDefinition(home=os.homedir(),{cliPath=path.join(home,'.local/bin/webhelm'),nodePath=null,sourceMode=false}={}) {
   const cli=cliPath;
   const program=nodePath||cli;
   const args=nodePath?`<string>${escapeXml(cli)}</string><string>ensure</string>`:'<string>ensure</string>';
   const environment=[path.join(home,'.local/bin'),path.join(home,'.local/opt/node22/bin'),
     '/opt/homebrew/bin','/usr/local/bin','/usr/bin','/bin'].join(':');
-  // Use the cached, tested npm Runtime directly to avoid registry/network
-  // dependency at login or when Chrome has just auto-updated. This must call
+  // Use a pinned local Runtime (or the source checkout on Neo Master), not
+  // npm/network at login or after Chrome updates. This must call
   // 'ensure', not 'status': a live daemon does not imply a live Chrome.
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>\n<key>Label</key><string>${LABEL}</string>\n<key>ProgramArguments</key><array><string>${escapeXml(program)}</string>${args}</array>\n<key>EnvironmentVariables</key><dict><key>PATH</key><string>${escapeXml(environment)}</string><key>HOME</key><string>${escapeXml(home)}</string></dict>\n<key>RunAtLoad</key><true/>\n<key>StartInterval</key><integer>30</integer>\n<key>StandardOutPath</key><string>/dev/null</string>\n<key>StandardErrorPath</key><string>/dev/null</string>\n</dict></plist>\n`;
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>\n<key>Label</key><string>${LABEL}</string>\n<key>ProgramArguments</key><array><string>${escapeXml(program)}</string>${args}</array>\n<key>EnvironmentVariables</key><dict><key>PATH</key><string>${escapeXml(environment)}</string><key>HOME</key><string>${escapeXml(home)}</string>${sourceMode?'<key>WEBHELM_SOURCE_MODE</key><string>1</string>':''}</dict>\n<key>RunAtLoad</key><true/>\n<key>StartInterval</key><integer>30</integer>\n<key>StandardOutPath</key><string>/dev/null</string>\n<key>StandardErrorPath</key><string>/dev/null</string>\n</dict></plist>\n`;
 }
-export function installLoginGuard({home=os.homedir(), platform=process.platform, apply=true,cliPath,nodePath}={}){
+export function installLoginGuard({home=os.homedir(), platform=process.platform, apply=true,cliPath,nodePath,sourceMode=false}={}){
   if(platform!=='darwin')return {status:'unsupported',label:LABEL};
   const cli=cliPath||path.join(home,'.local/bin/webhelm');
   if(!fs.existsSync(cli))return {status:'skipped',reason:'WebHelm runtime launcher missing',label:LABEL};
   const dest=path.join(home,'Library/LaunchAgents',`${LABEL}.plist`);
-  const content=loginGuardDefinition(home,{cliPath,nodePath});
+  const content=loginGuardDefinition(home,{cliPath,nodePath,sourceMode});
   fs.mkdirSync(path.dirname(dest),{recursive:true});
   if(fs.existsSync(dest)){
     const old=fs.readFileSync(dest,'utf8');

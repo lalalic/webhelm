@@ -9,4 +9,11 @@ while [ -L "$SOURCE" ]; do
 done
 SKILL_DIR=$(CDPATH= cd -- "$(dirname -- "$SOURCE")/.." && pwd -P)
 export WEBHELM_ADMIN_HELPER="${WEBHELM_ADMIN_HELPER:-$SKILL_DIR/scripts/admin.mjs}"
+# On Neo Master this Skill is symlinked into the WebHelm source checkout.
+# Run that checkout directly; never install npm Runtime copies on Master.
+REPO_DIR=$(CDPATH= cd -- "$SKILL_DIR/../.." && pwd -P)
+if [ -f "$REPO_DIR/package.json" ] && [ -f "$REPO_DIR/runtime/cli.mjs" ] && [ -f "$REPO_DIR/bin/webhelm.mjs" ]; then
+  export WEBHELM_SOURCE_MODE=1
+  exec node "$REPO_DIR/bin/webhelm.mjs" "$@"
+fi
 exec npm exec --yes --package=webhelm@latest -- webhelm "$@"

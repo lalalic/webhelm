@@ -96,7 +96,18 @@ globalThis.browserWorkspaceManagerRpc = async (request) => {
   }
 };
 
+// Only the daemon's direct Service Worker RPC may provision, resize, delete,
+// or restore Workspace identities. A browser Session on an extension page must
+// not gain management rights through chrome.runtime.sendMessage().
+const APPLICATION_ONLY_METHODS = new Set([
+  "workspace.create", "workspace.resize", "workspace.delete",
+  "workspace.ensure", "workspace.migrateDefault",
+]);
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (APPLICATION_ONLY_METHODS.has(request?.method)) {
+    sendResponse({ok:false,error:{message:"Workspace management requires an application daemon API"}});
+    return false;
+  }
   if (request?.method?.startsWith("workspace.control.") &&
       (sender?.url !== chrome.runtime.getURL("popup.html") ||
         !["workspace.control.requestStop", "workspace.control.status"].includes(request.method))) {

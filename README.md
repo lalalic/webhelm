@@ -11,6 +11,10 @@
 
 The npm package **does not include** the Skill or site Actions. The Skill's executable uses `npm exec --yes --package=webhelm@latest -- webhelm` to avoid inherited npm lifecycle variable conflicts; its contents may update without a Runtime release.
 
+The agent-facing `webhelm` CLI uses only the `WebHelm` Workspace. It intentionally does not accept `--workspace` or expose Workspace management helpers in `session exec`. `session stop --all` only stops WebHelm Sessions. Application services such as Relay provision their own named Workspaces through the daemon IPC `workspace-create`, `workspace-resize`, and `workspace-delete`; they may start Sessions via the daemon `start` operation for those pre-provisioned names. Leasing a missing Workspace fails rather than creating it.
+
+Neo Master development uses the Git checkout directly via local symlinks for the CLI, Skill, and Extension; production nodes use published npm Runtime installations. Set `WEBHELM_SOURCE_MODE=1` when running the checkout directly; this loads the Extension from the repository and creates a LaunchAgent that references the repository's CLI without staging an npm Runtime copy.
+
 ## Install and use
 
 ```sh

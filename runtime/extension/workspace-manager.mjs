@@ -550,7 +550,11 @@ export class WorkspaceManager {
 
   async acquireIdentity(name) {
     const normalizedName = normalizeWorkspaceName(name);
-    const ready = await this.ensureWorkspace(normalizedName);
+    // Leasing may allocate a Tab inside an existing Workspace, but must never
+    // provision a new Workspace as a side effect. Only app-owned creation can.
+    const ready = await this.status(normalizedName);
+    if (!ready.initialized)
+      throw new Error(`Workspace ${normalizedName} does not exist; an application must provision it first`);
     const tabs = await this.groupTabs(ready.groupId);
     const { idle, leased } = this.classify(normalizedName, tabs);
     if (!idle.length && leased.length >= ready.poolSize) {
@@ -591,7 +595,11 @@ export class WorkspaceManager {
       throw new Error("Workspace acquire requires an http(s) or chrome-extension URL");
     }
 
-    const ready = await this.ensureWorkspace(normalizedName);
+    // Leasing may allocate a Tab inside an existing Workspace, but must never
+    // provision a new Workspace as a side effect. Only app-owned creation can.
+    const ready = await this.status(normalizedName);
+    if (!ready.initialized)
+      throw new Error(`Workspace ${normalizedName} does not exist; an application must provision it first`);
     const tabs = await this.groupTabs(ready.groupId);
     const { idle, leased } = this.classify(normalizedName, tabs);
     if (!idle.length && leased.length >= ready.poolSize) {

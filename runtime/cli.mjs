@@ -4,13 +4,14 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
-import { ensureDaemon, request, handle, SOCKET } from './node-daemon.mjs';
+import { ensureDaemon, request, SOCKET } from './node-daemon.mjs';
 import { PLATFORMS, listPlatforms, platformProfile, actionPath, validateConfig } from './platforms.mjs';
 import { ACTIONS_DIR, ensureActions, syncActions, publishActions } from './actions-repo.mjs';
 import { migrateConfig, migrateChromeProfile } from './migrate.mjs';
 import { installLoginGuard, stageRuntimeForLoginGuard } from './login-guard.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
+const CLI_WORKSPACE = 'WebHelm';
 const emit = value => console.log(JSON.stringify(value));
 const arg = (items, name) => {
   const i = items.indexOf(name);
@@ -26,8 +27,8 @@ Usage:
   webhelm setup
   webhelm status
   webhelm ensure  # verify/recover managed Chrome and WebHelm group, not just daemon ping
-  webhelm capacity [--workspace NAME]
-  webhelm session start [--workspace NAME] [--url URL]
+  webhelm capacity  # WebHelm workspace only
+  webhelm session start [--url URL]  # WebHelm workspace only
   webhelm session list
   webhelm session heartbeat SESSION_ID  # keep a working Session alive
   webhelm session exec SESSION_ID [--code-file FILE]   # JavaScript
@@ -93,9 +94,26 @@ async function runPlatform(args) {
     };
   }
   if (mode === 'sync' && (!sid || auto)) throw Error('sync new-turn requires a caller-owned --session-id');
+  if (sid) await requireCliSession(sid);
   if (!sid && !auto) throw Error('platform run requires --session-id; use --auto-session only for one-shot actions');
   return request({op:'platform-run', platform, action, config: {...config, ...(mode ? {mode} : {})},
-    session_id:sid, auto_session:auto, url:arg(args, '--url')});
+    session_id:sid, auto_session:auto, url:arg(args, '--url'), workspace:CLI_WORKSPACE});
+}
+
+// The agent CLI is not a Workspace provisioning interface. Other workspaces
+// belong to application code using the explicit daemon IPC API.
+function rejectWorkspaceOverride(args) {
+  if (has(args, '--workspace') || args.some(a=>a.startsWith('--workspace=')))
+    throw Error('CLI is restricted to the WebHelm workspace; applications must provision custom workspaces through the daemon API');
+}
+function onlyCliWorkspace(sessions) {
+  return (sessions || []).filter(item=>item.workspace === CLI_WORKSPACE);
+}
+async function requireCliSession(sessionId) {
+  if (!sessionId) throw Error('session id is required');
+  const listed = await request({op:'list'});
+  if (!onlyCliWorkspace(listed.sessions).some(item=>item.session_id===sessionId))
+    throw Error(`Session ${sessionId} is not owned by the WebHelm CLI workspace`);
 }
 
 async function main(args = process.argv.slice(2)) {
@@ -110,8 +128,11 @@ async function main(args = process.argv.slice(2)) {
   if (group === 'setup') {
     const repo=await ensureActions();
     const chrome=await ensureDaemon();
-    const persisted=stageRuntimeForLoginGuard();
-    const login_guard=installLoginGuard({cliPath:path.join(persisted.path,'bin/webhelm.mjs'),nodePath:process.execPath});
+    const sourceMode=process.env.WEBHELM_SOURCE_MODE==='1';
+    const cliPath=sourceMode
+      ? fileURLToPath(new URL('../bin/webhelm.mjs',import.meta.url))
+      : path.join(stageRuntimeForLoginGuard().path,'bin/webhelm.mjs');
+    const login_guard=installLoginGuard({cliPath,nodePath:process.execPath,sourceMode});
     return emit({status:'ready',...repo,daemon_pid:chrome.pid,managed_chrome:chrome.managed_chrome,login_guard});
   }
   if (group === 'ensure') return emit(await request({op:'guard-check'}));
@@ -124,26 +145,31 @@ async function main(args = process.argv.slice(2)) {
       daemon:{running:true, pid:daemon.pid, session_count:daemon.session_count, queue_paused:daemon.queue_paused, socket:SOCKET}});
   }
   if (group === 'capacity') {
-    const payload={op:'capacity',workspace:arg(args,'--workspace')};
-    try { return emit(await request(payload)); }
-    catch(error) {
-      // Rolling upgrade: query extension metadata directly until a busy old
-      // Node daemon can drain its Sessions and load the new capacity operation.
-      if (!String(error.message).includes('unknown op: capacity')) throw error;
-      emit(await handle(payload));
-      return process.exit(0); // close this CLI's one-off CDP websocket
-    }
+    rejectWorkspaceOverride(args);
+    const payload={op:'capacity',workspace:CLI_WORKSPACE};
+    // Never run a second in-process browser controller as a fallback: it may
+    // reload an older daemon's Extension while its Sessions are still active.
+    return emit(await request(payload));
   }
   if (group === 'session') {
-    if (command === 'start') return emit(await request({op:'start', workspace:arg(args,'--workspace'), url:arg(args,'--url')}));
-    if (command === 'list') return emit(await request({op:'list'}));
+    rejectWorkspaceOverride(args);
+    if (command === 'start') return emit(await request({op:'start', workspace:CLI_WORKSPACE, url:arg(args,'--url')}));
+    if (command === 'list') {
+      const result=await request({op:'list'});
+      const sessions=onlyCliWorkspace(result.sessions);
+      return emit({session_count:sessions.length,sessions});
+    }
     if (command === 'heartbeat') {
-      if (!args[2]) throw Error('session heartbeat requires SESSION_ID');
+      await requireCliSession(args[2]);
       return emit(await request({op:'heartbeat',session_id:args[2]}));
     }
-    if (command === 'stop') return emit(await request(has(args,'--all') ? {op:'stop-all'} : {op:'stop',session_id:args[2]}));
+    if (command === 'stop') {
+      if (has(args,'--all')) return emit(await request({op:'stop-workspace',workspace:CLI_WORKSPACE}));
+      await requireCliSession(args[2]);
+      return emit(await request({op:'stop',session_id:args[2]}));
+    }
     if (command === 'exec') {
-      if (!args[2]) throw Error('session exec requires SESSION_ID');
+      await requireCliSession(args[2]);
       const file = arg(args, '--code-file');
       const code = file ? fs.readFileSync(file, 'utf8') : fs.readFileSync(0, 'utf8');
       const result = await request({op:'exec', session_id:args[2], code});
@@ -153,6 +179,7 @@ async function main(args = process.argv.slice(2)) {
     }
   }
   if (group === 'platform') {
+    rejectWorkspaceOverride(args);
     if (command === 'sync') return emit(await syncActions());
     if (command === 'publish') return emit(await publishActions(arg(args, '--message')));
     await ensureActions();

@@ -46,3 +46,18 @@ test('daemon login runtime is versioned and survives npx cache removal',()=>{
     assert.doesNotMatch(xml,/_npx/);
   } finally{fs.rmSync(dir,{recursive:true,force:true});}
 });
+
+test('source-mode login guard uses the checkout path without staging a package',()=>{
+  const temp=fs.mkdtempSync(path.join(os.tmpdir(),'webhelm-source-guard-'));
+  try {
+    const checkout=path.join(temp,'source/bin/webhelm.mjs');
+    fs.mkdirSync(path.dirname(checkout),{recursive:true});
+    fs.writeFileSync(checkout,'#!/usr/bin/env node\n');
+    const r=installLoginGuard({home:temp,platform:'darwin',apply:false,cliPath:checkout,nodePath:'/usr/bin/node',sourceMode:true});
+    assert.equal(r.status,'staged');
+    const xml=fs.readFileSync(r.path,'utf8');
+    assert.match(xml,/WEBHELM_SOURCE_MODE<\/key><string>1<\/string>/);
+    assert.ok(xml.includes(checkout));
+    assert.doesNotMatch(xml,/runtime-1\./);
+  }finally{fs.rmSync(temp,{recursive:true,force:true});}
+});

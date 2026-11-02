@@ -232,9 +232,6 @@ function makeHelpers(s){
   async workspace_status(){return extensionCall(s,'workspace.status',{name:s.workspace})},
   async workspace_capacity(){const r=await h.workspace_status();const idle=Array.isArray(r.idleTabIds)?r.idleTabIds.length:null,leased=Array.isArray(r.leasedTabIds)?r.leasedTabIds.length:null;return {name:r.name,poolSize:r.poolSize??null,maxCapacity:r.maxCapacity??r.poolSize??null,physicalTabs:r.physicalTabs??(idle!==null&&leased!==null?idle+leased:null),idle,leased,available:Number.isInteger(r.maxCapacity??r.poolSize)&&leased!==null?Math.max(0,(r.maxCapacity??r.poolSize)-leased):null}} ,
   async workspace_list(){return extensionCall(s,'workspace.list')},
-  async workspace_create(name,poolSize=5){return extensionCall(s,'workspace.create',{name,poolSize})},
-  async workspace_resize(name,poolSize){return extensionCall(s,'workspace.resize',{name,poolSize})},
-  async workspace_delete(name,force=false){return extensionCall(s,'workspace.delete',{name,force})},
   async wait(seconds){return delay(seconds*1000)},
   async sleep(milliseconds){return delay(milliseconds)},
   async type_text(text){return cdp(s,'Input.insertText',{text:String(text)})},
@@ -507,7 +504,18 @@ function heartbeatSession(sid){
   return {session_id:sid,alive:true,last_used_at:s.last_used_at};
 }
 
-async function workspaceOp(req){const h=makeHelpers({workspace:req.name||await defaultWorkspaceName(),targetId:'',targets:new Set(),attachments:new Map()});if(req.op==='workspace-create')return h.workspace_create(req.name,req.pool_size);if(req.op==='workspace-delete')return h.workspace_delete(req.name,req.force);throw Error(`unknown op: ${req.op}`)}
+// Applications (Relay, Neo, etc.) provision Workspaces through the daemon IPC,
+// never through the agent-facing CLI or its session JavaScript namespace.
+async function workspaceOp(req) {
+  if (typeof req.name !== 'string' || !req.name.trim()) throw Error('workspace name required');
+  if (req.op === 'workspace-create')
+    return extensionCall(null,'workspace.create',{name:req.name,poolSize:req.pool_size ?? 8});
+  if (req.op === 'workspace-resize')
+    return extensionCall(null,'workspace.resize',{name:req.name,poolSize:req.pool_size});
+  if (req.op === 'workspace-delete')
+    return extensionCall(null,'workspace.delete',{name:req.name,force:Boolean(req.force)});
+  throw Error(`unknown workspace operation: ${req.op}`);
+}
 function getChatGPTQueue() {
   if (chatgptQueue) return chatgptQueue;
   chatgptQueue = new ChatGPTQueue({
@@ -605,7 +613,7 @@ export function actionOutput(logs, value) {
 async function runPlatform(req) {
   const platform=req.platform, action=req.action, config=req.config || {};
   const auto=Boolean(req.auto_session);
-  const started=auto ? await createSession({url:req.url}) : {session_id:req.session_id};
+  const started=auto ? await createSession({url:req.url,workspace:req.workspace}) : {session_id:req.session_id};
   const sid=started.session_id;
   if (!sid) throw Error('platform run requires a session_id or auto_session');
   const session=sessions.get(sid);
@@ -646,7 +654,7 @@ async function runPlatform(req) {
     self_heal_capable:!auto,result};
 }
 
-export async function handle(req){switch(req.op){case'ping':return {ok:true,pid:process.pid,version:PACKAGE_VERSION,queue_paused:process.env.WEBHELM_CHATGPT_QUEUE_PAUSED==='1',session_count:sessions.size,managed_chrome:managedChrome||{profile_dir:PROFILE_DIR, endpoint:process.env.WEBHELM_CDP_URL||'http://127.0.0.1:9222',reused:true},chrome_guard:managedChromeGuard.status()};case'guard-check':{let status=await managedChromeGuard.tick();for(let retry=0;retry<6 && status.status!=='healthy' && !status.skipped;retry++){await delay(800);status=await managedChromeGuard.tick();}if(status.status!=='healthy' && !status.skipped)throw Error(`WebHelm Chrome health degraded: ${status.error||status.status}`);return {ok:true,chrome_guard:status};}case'heartbeat':return heartbeatSession(req.session_id);case'list':return {session_count:sessions.size,sessions:[...sessions.values()].map(s=>({session_id:s.session_id,workspace:s.workspace,target_id:s.targetId,last_used_at:s.last_used_at}))};case'start':return createSession(req);case'exec':return execute(req);case'stop':return stopSession(req.session_id);case'stop-all':return stopAllSessions();case'capacity':return workspaceCapacity(req);case'workspace-create':case'workspace-delete':return workspaceOp(req);case'chatgpt-new-turn-enqueue':return getChatGPTQueue().enqueue(req.config);case'platform-run':return runPlatform(req);default:throw Error(`unknown op: ${req.op}`)}}
+export async function handle(req){switch(req.op){case'ping':return {ok:true,pid:process.pid,version:PACKAGE_VERSION,queue_paused:process.env.WEBHELM_CHATGPT_QUEUE_PAUSED==='1',session_count:sessions.size,managed_chrome:managedChrome||{profile_dir:PROFILE_DIR, endpoint:process.env.WEBHELM_CDP_URL||'http://127.0.0.1:9222',reused:true},chrome_guard:managedChromeGuard.status()};case'guard-check':{let status=await managedChromeGuard.tick();for(let retry=0;retry<6 && status.status!=='healthy' && !status.skipped;retry++){await delay(800);status=await managedChromeGuard.tick();}if(status.status!=='healthy' && !status.skipped)throw Error(`WebHelm Chrome health degraded: ${status.error||status.status}`);return {ok:true,chrome_guard:status};}case'heartbeat':return heartbeatSession(req.session_id);case'list':return {session_count:sessions.size,sessions:[...sessions.values()].map(s=>({session_id:s.session_id,workspace:s.workspace,target_id:s.targetId,last_used_at:s.last_used_at}))};case'start':return createSession(req);case'exec':return execute(req);case'stop':return stopSession(req.session_id);case'stop-all':return stopAllSessions();case'stop-workspace':{if(typeof req.workspace!=='string'||!req.workspace.trim())throw Error('workspace required');return stopWorkspaceSessions(req.workspace)}case'capacity':return workspaceCapacity(req);case'workspace-create':case'workspace-resize':case'workspace-delete':return workspaceOp(req);case'chatgpt-new-turn-enqueue':return getChatGPTQueue().enqueue(req.config);case'platform-run':return runPlatform(req);default:throw Error(`unknown op: ${req.op}`)}}
 function serve(conn) {
   let buffer = '';
   conn.setEncoding('utf8');
