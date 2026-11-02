@@ -92,6 +92,8 @@ try {
   const worker=await waitFor(async()=>(await cdp('Target.getTargets')).targetInfos.find(
     target=>target.type==='service_worker' && target.url.includes(EXTENSION_ID)), 'Extension worker');
   let workerSid=await attach(worker.targetId);
+  const pinned=await evaluate(workerSid,"chrome.tabs.create({url:'about:blank',pinned:true,active:false})");
+  assert.equal(pinned.pinned,true);
   await waitFor(()=>rpc(workerSid,'workspace.ensure',{name:'Harness',poolSize:4}),'legacy Harness created');
   console.log('Legacy Harness group created');
   await cdp('Target.detachFromTarget',{sessionId:workerSid});
@@ -107,6 +109,12 @@ try {
   let groups=await rpc(workerSid,'workspace.list');
   assert.ok(groups.workspaces.some(w=>w.name==='WebHelm'));
   assert.ok(!groups.workspaces.some(w=>w.name==='Harness'));
+  const webhelmId=groups.workspaces.find(w=>w.name==='WebHelm').groupId;
+  const order=await evaluate(workerSid,`chrome.tabs.query({}).then(tabs=>tabs.filter(tab=>tab.windowId===${pinned.windowId}).map(({id,index,pinned,groupId})=>({id,index,pinned,groupId})).sort((a,b)=>a.index-b.index))`);
+  assert.equal(order[0].id,pinned.id,'pinned tab remains leftmost');
+  assert.equal(order[1].groupId,webhelmId,'WebHelm group starts immediately after pinned tabs');
+  assert.equal(order[1].index,1,'WebHelm is first unpinned group after legacy migration');
+  console.log('GROUP FIRST PASS: pinned tab precedes WebHelm group',JSON.stringify(order.slice(0,4)));
   const preservedTargetId=first.target_id;
   const stopped=await request({op:'stop',session_id:first.session_id});
   assert.equal(stopped.returned_to_idle,true);

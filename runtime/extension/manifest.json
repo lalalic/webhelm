@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "WebHelm",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Own named Chrome tab-group workspaces and lazy reusable tab pools for browser agents.",
   "permissions": [
     "storage",

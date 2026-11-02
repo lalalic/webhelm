@@ -128,6 +128,22 @@ export class WorkspaceManager {
     return await this.chrome.tabs.query({ groupId });
   }
 
+  // Only position the default group when it is created, migrated or restored.
+  // Never move it during routine Session allocation or periodic health checks,
+  // since the user may intentionally reorder the tab strip.
+  async positionDefaultGroupFirst(groupId, name) {
+    if (name !== "WebHelm") return false;
+    const groupTabs = await this.groupTabs(groupId);
+    if (!groupTabs.length) return false;
+    const windowId = groupTabs[0].windowId;
+    const windowTabs = await this.chrome.tabs.query({windowId});
+    const firstUnpinnedIndex = windowTabs.filter(tab => tab.pinned).length;
+    const firstGroupIndex = Math.min(...groupTabs.map(tab => tab.index));
+    if (firstGroupIndex === firstUnpinnedIndex) return false;
+    await this.chrome.tabGroups.move(groupId, {index: firstUnpinnedIndex});
+    return true;
+  }
+
   tabUrl(tab) {
     return String(tab?.pendingUrl || tab?.url || "");
   }
@@ -377,6 +393,7 @@ export class WorkspaceManager {
     for (const tab of created) this.markOwned(tab.id);
     const groupId = await this.chrome.tabs.group({ tabIds: created.map((tab) => tab.id) });
     await this.chrome.tabGroups.update(groupId, { title: name, collapsed: true });
+    await this.positionDefaultGroupFirst(groupId, name);
     for (const tab of created) await this.waitForIdleTab(tab.id, name);
     return await this.status(name);
   }
@@ -455,6 +472,8 @@ export class WorkspaceManager {
     for (const name of Object.keys(config.workspaces || {}).sort()) {
       restored.push(await this.ensureWorkspace(name));
     }
+    const defaultGroup = restored.find(item => item.name === "WebHelm" && item.initialized);
+    if (defaultGroup) await this.positionDefaultGroupFirst(defaultGroup.groupId, "WebHelm");
     return { workspaces: restored };
   }
 
@@ -492,6 +511,9 @@ export class WorkspaceManager {
         await this.chrome.tabs.update(tab.id, {url: this.idleUrl(newName), active: false});
         updated.push(tab);
       }
+      // Position before committing the new config so move failures still
+      // unwind the legacy migration coherently in the catch block.
+      if (group) await this.positionDefaultGroupFirst(group.id, newName);
       config.workspaces[newName] = config.workspaces[oldName];
       delete config.workspaces[oldName];
       await this.saveConfig(config);
