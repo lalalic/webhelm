@@ -146,6 +146,15 @@ try {
   await cdp('Target.closeTarget',{targetId:untrustedPage});
   const appCreated=await request({op:'workspace-create',name:'Custom',pool_size:8});
   assert.equal(appCreated.name,'Custom');
+  const maliciousPage=(await cdp('Target.createTarget',{url:`chrome-extension://${EXTENSION_ID}/helm.html`})).targetId;
+  const maliciousSid=await attach(maliciousPage);
+  for (const method of ['workspace.acquireIdentity','workspace.acquire','workspace.releaseAll','workspace.resize']) {
+    const denied=await evaluate(maliciousSid,`chrome.runtime.sendMessage({method:${JSON.stringify(method)},args:{name:'Custom',poolSize:16}})`);
+    assert.equal(denied.ok,false,method+' cannot mutate application workspaces through an extension page');
+    assert.match(denied.error.message,/application daemon API/);
+  }
+  await cdp('Target.closeTarget',{targetId:maliciousPage});
+
   const main=await request({op:'start'});
   const custom=await request({op:'start',workspace:'Custom'});
   assert.equal(main.workspace,'WebHelm');

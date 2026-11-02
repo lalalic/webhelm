@@ -11,7 +11,7 @@ class FakeBrowser extends EventTarget {
   static OPEN=1;
   readyState=0;
   static inst;
-  constructor(){super();FakeBrowser.inst=this;this.targets=[{targetId:'control',type:'page',url:base},{targetId:'slot1',type:'page',url:idle(1)}];this.attachments=new Map();this.nextAttachment=0;this.nextTab=1;this.operations=[];queueMicrotask(()=>{this.readyState=1;this.dispatchEvent(new Event('open'))});}
+  constructor(){super();FakeBrowser.inst=this;this.targets=[{targetId:'worker',type:'service_worker',url:'chrome-extension://kkkpgmhpoeceojalkpfdidffdfnlgdog/service-worker.mjs'},{targetId:'control',type:'page',url:base},{targetId:'slot1',type:'page',url:idle(1)}];this.attachments=new Map();this.nextAttachment=0;this.nextTab=1;this.operations=[];queueMicrotask(()=>{this.readyState=1;this.dispatchEvent(new Event('open'))});}
   send(data){
     const req=JSON.parse(data),{method,params={},sessionId}=req;
     let result={};
@@ -31,8 +31,9 @@ class FakeBrowser extends EventTarget {
     }
     if(method==='Runtime.evaluate'){
       const src=params.expression;
-      if(src.startsWith('chrome.runtime.sendMessage(')){
-        const request=JSON.parse(src.slice('chrome.runtime.sendMessage('.length,-1));
+      if(src.startsWith('chrome.runtime.sendMessage(')||src.startsWith('globalThis.browserWorkspaceManagerRpc(')){
+        const prefix=src.startsWith('globalThis')?'globalThis.browserWorkspaceManagerRpc(':'chrome.runtime.sendMessage(';
+        const request=JSON.parse(src.slice(prefix.length,-1));
         if(request.method==='workspace.acquireIdentity'){
           let tab=this.targets.find(t=>t.type==='page'&&/role=idle/.test(t.url));
           if(!tab){const id=++this.nextTab;tab={targetId:`slot${id}`,type:'page',url:idle(id)};this.targets.push(tab);}

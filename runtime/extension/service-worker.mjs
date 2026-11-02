@@ -102,6 +102,8 @@ globalThis.browserWorkspaceManagerRpc = async (request) => {
 const APPLICATION_ONLY_METHODS = new Set([
   "workspace.create", "workspace.resize", "workspace.delete",
   "workspace.ensure", "workspace.migrateDefault",
+  "workspace.acquire", "workspace.acquireIdentity",
+  "workspace.release", "workspace.releaseAll",
 ]);
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (APPLICATION_ONLY_METHODS.has(request?.method)) {

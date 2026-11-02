@@ -312,36 +312,48 @@ async function extensionCallSerialized(_session,method,args={}) {
       `globalThis.browserWorkspaceManagerRpc(${request})`);
     }catch(error){debuggerSession=null;throw error;}
   }
-  const page=targetInfos.find(t=>t.type==='page'&&t.url.startsWith(EXTENSION_PREFIX)&&(t.url.includes('/workspace.html')||t.url.includes('/helm.html')));
-  if(page){
-    const {sessionId}=await browser.send('Target.attachToTarget',{targetId:page.targetId,flatten:true});
-    try{return await evaluateExtension(browser,sessionId,`chrome.runtime.sendMessage(${request})`);}
-    finally{await browser.send('Target.detachFromTarget',{sessionId}).catch(()=>{});}
-  }
-  if(!extensionConfigured())throw Error('WebHelm workspace extension is not installed or enabled');
-  // Wake a suspended MV3 worker from a temporary background extension page.
-  // Only this temporary target is closed; no user tab is reused or modified.
-  const {targetId}=await browser.send('Target.createTarget',{
-    url:`${EXTENSION_PREFIX}helm.html?webhelm_wakeup=1`,background:true});
-  let sessionId;
-  try{
-    ({sessionId}=await browser.send('Target.attachToTarget',{targetId,flatten:true}));
-    let ready=false;
+  // Pages (including an agent-opened extension page) cannot mutate groups.
+  // Wake the MV3 worker using a read-only message, then invoke the actual
+  // operation directly in the worker over daemon-owned CDP.
+  const page=targetInfos.find(t=>t.type==='page'&&t.url.startsWith(EXTENSION_PREFIX)&&
+    (t.url.includes('/workspace.html')||t.url.includes('/helm.html')));
+  if(!page && !extensionConfigured())
+    throw Error('WebHelm workspace extension is not installed or enabled');
+  const wakeTarget=page?.targetId||(await browser.send('Target.createTarget',{
+    url:`${EXTENSION_PREFIX}helm.html?webhelm_wakeup=1`,background:true})).targetId;
+  const temporary=!page;
+  let wakeSession;
+  try {
+    ({sessionId:wakeSession}=await browser.send('Target.attachToTarget',{targetId:wakeTarget,flatten:true}));
+    let awake=false;
     for(let attempt=0;attempt<20;attempt++){
       try{
-        const reply=await browser.send('Runtime.evaluate',{
-          expression:`typeof chrome!=='undefined'&&chrome.runtime?.id===${JSON.stringify(EXTENSION_ID)}`,
-          returnByValue:true},sessionId);
-        if(reply.result?.value===true){ready=true;break;}
-      }catch{}
-      await delay(100);
+        await evaluateExtension(browser,wakeSession,
+          'chrome.runtime.sendMessage({method:"workspace.list"})');
+        awake=true;break;
+      }catch(error){
+        if(attempt===19)throw error;
+        await delay(100);
+      }
     }
-    if(!ready)throw Error('WebHelm installed extension did not initialize its background page');
-    return await evaluateExtension(browser,sessionId,`chrome.runtime.sendMessage(${request})`);
-  }finally{
-    if(sessionId)await browser.send('Target.detachFromTarget',{sessionId}).catch(()=>{});
-    await browser.send('Target.closeTarget',{targetId}).catch(()=>{});
+    if(!awake)throw Error('WebHelm Extension did not awaken');
+  } finally {
+    if(wakeSession)await browser.send('Target.detachFromTarget',{sessionId:wakeSession}).catch(()=>{});
+    if(temporary)await browser.send('Target.closeTarget',{targetId:wakeTarget}).catch(()=>{});
   }
+  for(let attempt=0;attempt<30;attempt++){
+    const {targetInfos:updated=[]}=await browser.send('Target.getTargets');
+    const active=updated.find(t=>t.type==='service_worker'&&t.url.startsWith(EXTENSION_PREFIX));
+    if(active){
+      const {sessionId}=await browser.send('Target.attachToTarget',{targetId:active.targetId,flatten:true});
+      debuggerSession={targetId:active.targetId,sessionId};
+      try{return await evaluateExtension(browser,sessionId,
+        `globalThis.browserWorkspaceManagerRpc(${request})`);}
+      catch(error){debuggerSession=null;throw error;}
+    }
+    await delay(100);
+  }
+  throw Error('WebHelm Extension Service Worker did not become available after wake');
 }
 
 function jsonSafe(value){try{JSON.stringify(value);return {value}}catch{return {value_repr:String(value)}}}
