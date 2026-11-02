@@ -173,8 +173,8 @@ const managedChromeGuard=createManagedChromeGuard(guardManagedChrome,{
 function adoptPopup(info){if(info?.type!=='page'||!info.openerId)return;const owner=targets.get(info.openerId);if(owner){owner.targets.add(info.targetId);targets.set(info.targetId,owner)}}
 async function attach(s,targetId,b=null){b ||= await connectBrowser();const {sessionId}=await b.send('Target.attachToTarget',{targetId,flatten:true});s.targets.add(targetId);s.attachments.set(targetId,sessionId);targets.set(targetId,s);for(const d of ['Page','DOM','Runtime','Network'])await b.send(`${d}.enable`,{},sessionId);for(const dispose of s.eventDisposers?.get(targetId)||[])dispose();const removers=[];for(const method of ['Page.loadEventFired','Page.domContentEventFired','Page.javascriptDialogOpening','Page.javascriptDialogClosed','Runtime.exceptionThrown','Network.requestWillBeSent','Network.responseReceived'])removers.push(b.on(method,(params,owner)=>{if(owner===sessionId){if(s.events.length>=500)s.events.shift();s.events.push({method,params,session_id:sessionId,target_id:targetId})}}));s.eventDisposers?.set(targetId,removers);return sessionId}
 function sidFor(s,targetId=s.targetId){const sid=s.attachments.get(targetId);if(!sid)throw new Error(`target ${targetId} is not attached to this session`);return sid}
-async function evaluate(s,expression,targetId=s.targetId,awaitPromise=true){if(!s.targets.has(targetId))throw Error('cannot evaluate a target outside the active WebHelm session');const b=await connectBrowser();const r=await b.send('Runtime.evaluate',{expression,returnByValue:true,awaitPromise,userGesture:true},sidFor(s,targetId));if(r.exceptionDetails)throw new Error(r.exceptionDetails.exception?.description||r.exceptionDetails.text);return r.result?.value}
-async function cdp(s,method,params={},targetId=s.targetId){if(method==='Target.createTarget')throw Error('Target.createTarget is disabled; use new_tab(url)');if(method==='Target.attachToTarget'||method==='Target.detachFromTarget')throw Error('direct target attachment changes are disabled in WebHelm sessions');if(['Target.closeTarget','Target.activateTarget'].includes(method)&&!s.targets.has(params.targetId))throw Error('cannot operate on a tab outside the active WebHelm session');if(method.startsWith('Target.')||method.startsWith('Browser.')||method.startsWith('ServiceWorker.'))return connectBrowser().then(b=>b.send(method,params));return connectBrowser().then(b=>b.send(method,params,sidFor(s,targetId)))}
+async function evaluate(s,expression,targetId=s.targetId,awaitPromise=true){if(s.poisoned || s.closing)throw Error('Session execution expired or closing');if(!s.targets.has(targetId))throw Error('cannot evaluate a target outside the active WebHelm session');const b=await connectBrowser();if(s.poisoned || s.closing)throw Error('Session execution expired or closing');const r=await b.send('Runtime.evaluate',{expression,returnByValue:true,awaitPromise,userGesture:true},sidFor(s,targetId));if(r.exceptionDetails)throw new Error(r.exceptionDetails.exception?.description||r.exceptionDetails.text);return r.result?.value}
+async function cdp(s,method,params={},targetId=s.targetId){if(s.poisoned || s.closing)throw Error('Session execution expired or closing');if(method==='Target.createTarget')throw Error('Target.createTarget is disabled; use new_tab(url)');if(method==='Target.attachToTarget'||method==='Target.detachFromTarget')throw Error('direct target attachment changes are disabled in WebHelm sessions');if(['Target.closeTarget','Target.activateTarget'].includes(method)&&!s.targets.has(params.targetId))throw Error('cannot operate on a tab outside the active WebHelm session');return connectBrowser().then(browser=>{if(s.poisoned || s.closing)throw Error('Session execution expired or closing');if(method.startsWith('Target.')||method.startsWith('Browser.')||method.startsWith('ServiceWorker.'))return browser.send(method,params);return browser.send(method,params,sidFor(s,targetId));})}
 function makeHelpers(s){
  const h={
   js:(expression,target_id)=>evaluate(s,expression,target_id||s.targetId),
@@ -183,9 +183,11 @@ function makeHelpers(s){
   async current_tab(){const info=await cdp(s,'Target.getTargetInfo',{targetId:s.targetId});return info.targetInfo},
   async new_tab(url='about:blank') {
     const browser=await connectBrowser();
+    if(s.poisoned || s.closing)throw Error('Session execution expired or closing');
     let targetId,lease;
     if(s.workspaceSupported){
       ({lease,targetId}=await acquireIdentityLease(s));
+      if(s.poisoned || s.closing){await extensionCall(s,'workspace.release',{name:s.workspace,tabId:lease.tabId});throw Error('Session execution expired');}
       s.leasedTabs.set(targetId,lease.tabId);
       s.idleUrls.set(targetId,lease.idleUrl);
     }else ({targetId}=await browser.send('Target.createTarget',{url:'about:blank'}));
@@ -200,6 +202,7 @@ function makeHelpers(s){
     if(!s.targets.has(tid))throw Error('cannot close a tab outside the active WebHelm Session');
     return leaseMutex(s.workspace).run(async()=>{
       const browser=await connectBrowser();
+      if(s.poisoned || s.closing)throw Error('Session execution expired or closing');
       if(s.leasedTabs.has(tid))await navigateIdle(browser,s,tid,s.idleUrls.get(tid));
       else await browser.send('Target.closeTarget',{targetId:tid}); // Popup without pool slot.
       const attachment=s.attachments.get(tid);
@@ -227,7 +230,7 @@ function makeHelpers(s){
   },
   async fill_input(selector,text){if(!await h.wait_for_element(selector))throw Error(`element not found: ${selector}`);return evaluate(s,`(()=>{const e=document.querySelector(${JSON.stringify(selector)});const set=Object.getOwnPropertyDescriptor(Object.getPrototypeOf(e),'value')?.set;if(set)set.call(e,${JSON.stringify(String(text))});else e.textContent=${JSON.stringify(String(text))};e.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:${JSON.stringify(String(text))}}));e.dispatchEvent(new Event('change',{bubbles:true}));return true})()`)},
   async click(selector){if(!await h.wait_for_element(selector))throw Error(`element not found: ${selector}`);return evaluate(s,`(()=>{const e=document.querySelector(${JSON.stringify(selector)});e.click();return true})()`)},
-  async capture_screenshot(pathname){const b=await connectBrowser();const data=await b.send('Page.captureScreenshot',{format:'png'},sidFor(s));if(pathname)fs.writeFileSync(pathname,Buffer.from(data.data,'base64'));return data.data},
+  async capture_screenshot(pathname){const b=await connectBrowser();if(s.poisoned || s.closing)throw Error('Session execution expired or closing');const data=await b.send('Page.captureScreenshot',{format:'png'},sidFor(s));if(s.poisoned || s.closing)throw Error('Session execution expired or closing');if(pathname)fs.writeFileSync(pathname,Buffer.from(data.data,'base64'));return data.data},
   async snapshot(interactive_only=false){const result=await evaluate(s,`(()=>{let n=0;const xs=[...document.querySelectorAll('button,a,input,textarea,select,[role],[tabindex]')].filter(e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width&&r.height&&s.visibility!=='hidden'&&s.display!=='none'});return xs.map(e=>{const id='e'+(++n);e.setAttribute('data-ref',id);const role=e.getAttribute('role')||({BUTTON:'button',A:'link',INPUT:'textbox',TEXTAREA:'textbox',SELECT:'combobox'}[e.tagName]||e.tagName.toLowerCase());const name=e.getAttribute('aria-label')||e.innerText||e.value||e.placeholder||'';return '- '+role+' '+JSON.stringify(name.trim().slice(0,100))+' [ref='+id+']'}).join('\\n')})()`);return result||''},
   async workspace_status(){return extensionCall(s,'workspace.status',{name:s.workspace})},
   async workspace_capacity(){const r=await h.workspace_status();const idle=Array.isArray(r.idleTabIds)?r.idleTabIds.length:null,leased=Array.isArray(r.leasedTabIds)?r.leasedTabIds.length:null;return {name:r.name,poolSize:r.poolSize??null,maxCapacity:r.maxCapacity??r.poolSize??null,physicalTabs:r.physicalTabs??(idle!==null&&leased!==null?idle+leased:null),idle,leased,available:Number.isInteger(r.maxCapacity??r.poolSize)&&leased!==null?Math.max(0,(r.maxCapacity??r.poolSize)-leased):null}} ,
@@ -264,10 +267,19 @@ function makeHelpers(s){
   async title(){return (await h.page_info()).title}
  };
  // Revoke even helper references retained by unresolved async VM scripts.
+ // A rejected async VM execution does not cancel browser operations it
+ // already started. Keep their tab ownership until those operations settle.
+ const effectHelpers=new Set(['js','cdp','goto_url','new_tab','close_tab','fill_input',
+   'click','capture_screenshot','snapshot','type_text','upload_file','switch_tab','activate_tab']);
  for(const [name,helper] of Object.entries(h)){
-   if(typeof helper==='function') h[name]=(...args)=>{
-     if(s.poisoned)throw Error('Session execution expired');
-     return helper(...args);
+   if(typeof helper!=='function')continue;
+   h[name]=(...args)=>{
+     if(s.poisoned || s.closing)throw Error('Session execution expired or closing');
+     if(!effectHelpers.has(name))return helper(...args);
+     s.pendingEffects++;
+     try{
+       return Promise.resolve(helper(...args)).finally(()=>{s.pendingEffects--;});
+     }catch(error){s.pendingEffects--;throw error;}
    };
  }
  Object.defineProperty(h,'target_id',{get:()=>s.targetId});
@@ -370,7 +382,7 @@ async function createSession(req={}) {
   const s={session_id:sid, workspace:req.workspace||await defaultWorkspaceName(), targetId:null,
     rootTargetId:null, workspaceSupported:false,targets:new Set(), attachments:new Map(), eventDisposers:new Map(),
     leasedTabs:new Map(), idleUrls:new Map(), mutex:new Mutex(), events:[], namespace:null,context:null,
-    inFlight:0, closing:false, poisoned:false, last_used_at:Date.now()};
+    inFlight:0, pendingEffects:0, closing:false, poisoned:false, last_used_at:Date.now()};
   let targetId,lease;
   try {
     if(await extensionSupported()) {
@@ -421,7 +433,7 @@ async function execute(req) {
   if(!s || s.closing || s.poisoned)throw Error(`unknown session_id: ${req.session_id} (missing or closing)`);
   s.inFlight++;
   try {return await s.mutex.run(async()=>{
-    if(s.closing)throw Error('session closing');
+    if(s.closing || s.poisoned)throw Error('session closing or expired');
     s.last_used_at=Date.now();
     const logs=[],errors=[];
     const sandbox={...s.namespace};
@@ -498,7 +510,7 @@ async function closeSessionOwned(s){
 async function reconcileWorkspaceSessions(workspace){
   const browser=await connectBrowser();
   for(const s of [...sessions.values()]){
-    if(s.workspace!==workspace||s.closing||s.inFlight>0)continue;
+    if(s.workspace!==workspace||s.closing||s.inFlight>0||s.pendingEffects>0)continue;
     let alreadyIdle=false;
     for(const [tid,idleUrl] of s.idleUrls){
       try {if(sameIdleUrl(await targetUrl(browser,tid),idleUrl)){alreadyIdle=true;break;}}
@@ -514,22 +526,39 @@ async function stopSession(sid){
   const s=sessions.get(sid);
   if(!s)throw Error(`unknown session_id: ${sid}`);
   s.closing=true;
-  // Bound both drain and release. Never strand closing=true after failure.
+  // A timeout does not cancel a queued mutex callback. Fence this stop
+  // attempt before it can touch a Session whose close request failed.
+  const attempt={valid:true,releaseStarted:false};
   const timeoutMs=Math.max(50,Math.min(90000,Number(process.env.WEBHELM_SESSION_STOP_TIMEOUT_MS)||60000));
+  const deadline=performance.now()+timeoutMs;
   try {
-    const deadline=Date.now()+timeoutMs;
     await withinDeadline(s.mutex.run(async()=>{}),timeoutMs,'Session stop drain');
-    return await withinDeadline(leaseMutex(s.workspace).run(()=>closeSessionOwned(s)),
-      Math.max(1,deadline-Date.now()),'Session stop release');
+    // Browser effects already dispatched by an expired VM may outlive its
+    // mutex. They must settle before an idle Tab can be reassigned.
+    while(s.pendingEffects>0){
+      const remaining=deadline-performance.now();
+      if(remaining<=0)throw new SessionDeadlineError('Session stop effects',timeoutMs);
+      await withinDeadline(delay(Math.min(25,remaining)),remaining,'Session stop effects');
+    }
+    return await withinDeadline(leaseMutex(s.workspace).run(async()=>{
+      if(!attempt.valid)throw new SessionDeadlineError('Cancelled Session stop',timeoutMs);
+      attempt.releaseStarted=true;
+      return closeSessionOwned(s);
+    }),Math.max(1,deadline-performance.now()),'Session stop release');
   }catch(error){
-    if(sessions.get(sid)===s){s.closing=false;s.poisoned=true;}
+    attempt.valid=false;
+    if(sessions.get(sid)===s && !attempt.releaseStarted){
+      s.closing=false;s.poisoned=true;
+    }
+    // If physical close already started, keep closing=true until its own
+    // success/failure path finishes; otherwise GC could race its navigation.
     throw error;
   }
 }
 
 function heartbeatSession(sid){
   const s=sessions.get(sid);
-  if(!s||s.closing)throw Error(`unknown session_id: ${sid} (missing or closing)`);
+  if(!s||s.closing||s.poisoned)throw Error(`unknown session_id: ${sid} (missing, closing or expired)`);
   s.last_used_at=Date.now();
   return {session_id:sid,alive:true,last_used_at:s.last_used_at};
 }
@@ -652,13 +681,14 @@ async function runPlatform(req) {
   session.inFlight++;
   try {
     result=await session.mutex.run(async()=>{
+      if(session.poisoned||session.closing)throw Error('Session expired while waiting for platform action');
       const logs=[];
       const helpers=makeHelpers(session);
       helpers.enqueueChatGPTTurn=request=>{
-        if(session.poisoned)throw Error('Session execution expired');
+        if(session.poisoned||session.closing)throw Error('Session execution expired or closing');
         return getChatGPTQueue().enqueue(request);
       };
-      helpers.chatgptQueue=getChatGPTQueue();
+      helpers.chatgptQueue={enqueue:helpers.enqueueChatGPTTurn};
       try {
         const actionTimeoutMs=Math.max(50,Math.min(300000,Number(process.env.WEBHELM_PLATFORM_TIMEOUT_MS)||180000));
         const value=await withinDeadline(Promise.resolve().then(()=>invokePlatformAction(platform,action,{
@@ -690,11 +720,18 @@ async function runPlatform(req) {
 }
 
 export async function handle(req){switch(req.op){case'ping':return {ok:true,pid:process.pid,version:PACKAGE_VERSION,queue_paused:process.env.WEBHELM_CHATGPT_QUEUE_PAUSED==='1',session_count:sessions.size,managed_chrome:managedChrome||{profile_dir:PROFILE_DIR, endpoint:process.env.WEBHELM_CDP_URL||'http://127.0.0.1:9222',reused:true},chrome_guard:managedChromeGuard.status()};case'guard-check':{let status=await managedChromeGuard.tick();for(let retry=0;retry<6 && status.status!=='healthy' && !status.skipped;retry++){await delay(800);status=await managedChromeGuard.tick();}if(status.status!=='healthy' && !status.skipped)throw Error(`WebHelm Chrome health degraded: ${status.error||status.status}`);return {ok:true,chrome_guard:status};}case'heartbeat':return heartbeatSession(req.session_id);case'list':return {session_count:sessions.size,sessions:[...sessions.values()].map(s=>({session_id:s.session_id,workspace:s.workspace,target_id:s.targetId,last_used_at:s.last_used_at}))};case'start':return createSession(req);case'exec':return execute(req);case'stop':return stopSession(req.session_id);case'stop-all':return stopAllSessions();case'stop-workspace':{if(typeof req.workspace!=='string'||!req.workspace.trim())throw Error('workspace required');return stopWorkspaceSessions(req.workspace)}case'capacity':return workspaceCapacity(req);case'workspace-create':case'workspace-resize':case'workspace-delete':return workspaceOp(req);case'chatgpt-new-turn-enqueue':return getChatGPTQueue().enqueue(req.config);case'platform-run':return runPlatform(req);default:throw Error(`unknown op: ${req.op}`)}}
-function serve(conn) {
+export function serve(conn) {
   let buffer = '', dispatched = false;
+  conn.on('error',()=>{ /* A disconnected client must not crash the daemon. */ });
   conn.setEncoding('utf8');
   conn.on('data', async (chunk) => {
+    if(dispatched)return;
     buffer += chunk;
+    if(buffer.length>8_000_000){
+      dispatched=true;
+      if(!conn.destroyed)conn.end(JSON.stringify({error:'WebHelm IPC request too large'})+'\n');
+      return;
+    }
     const newline = buffer.indexOf('\n');
     if (newline < 0 || dispatched) return;
     dispatched=true;

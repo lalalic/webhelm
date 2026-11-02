@@ -25,7 +25,7 @@ export async function withinDeadline(promise, milliseconds, operation) {
 }
 
 export function staleSession(session, now = Date.now(), ttl = SESSION_IDLE_MS) {
-  return !session.closing && !(session.inFlight > 0) &&
+  return !session.closing && !(session.inFlight > 0) && !(session.pendingEffects > 0) &&
     (session.poisoned === true || now - session.last_used_at >= ttl);
 }
 

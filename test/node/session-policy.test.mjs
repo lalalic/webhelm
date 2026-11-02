@@ -12,6 +12,9 @@ test('session heartbeat and inflight operations prevent reclaim',()=>{
   assert.equal(staleSession(s,100+SESSION_IDLE_MS*10),false);
   s.poisoned=true;
   assert.equal(staleSession(s,100+SESSION_IDLE_MS*10),true,'Poisoned Session is collectible on next Tab request');
+  s.pendingEffects=1;
+  assert.equal(staleSession(s,100+SESSION_IDLE_MS*20),false,'In-flight CDP effects block unsafe Tab reuse');
+  s.pendingEffects=0;
   s.closing=true;
   assert.equal(staleSession(s,100+SESSION_IDLE_MS*20),false);
 });

@@ -34,3 +34,22 @@ test('IPC absolute deadline survives a daemon trickling incomplete replies',asyn
     await rm(root,{recursive:true,force:true});
   }
 });
+
+test('daemon rejects oversized unframed IPC input before allocating unbounded buffers',async()=>{
+  const {serve}=await import('../../runtime/node-daemon.mjs');
+  const server=createServer(serve);
+  try{
+    await new Promise((resolve,reject)=>server.listen(0,'127.0.0.1',resolve).once('error',reject));
+    const port=server.address().port;
+    const {createConnection}=await import('node:net');
+    const response=await new Promise((resolve,reject)=>{
+      const client=createConnection({host:'127.0.0.1',port});
+      let output='';
+      client.on('connect',()=>client.write('x'.repeat(8_000_100)));
+      client.on('data',data=>output+=data);
+      client.on('end',()=>resolve(output));
+      client.on('error',reject);
+    });
+    assert.match(JSON.parse(response).error,/request too large/);
+  }finally{await new Promise(resolve=>server.close(resolve));}
+});
