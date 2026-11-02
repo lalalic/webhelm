@@ -63,7 +63,7 @@ Keep platform-specific code and tests in `lalalic/webhelm-actions`. Runtime test
 
 ### Adding an unsupported platform
 
-The WebHelm Skill includes [`skills/webhelm/NEW_PLATFORM.md`](skills/webhelm/NEW_PLATFORM.md). All new platform code belongs in **`~/.local/webhelm/platforms/<slug>`**, checked out from `lalalic/webhelm-actions`, including tests and docs. There is no separate `platforms/` directory in the Skill or npm package. Publishing an Action uses Git, not npm.
+The repository provides [`docs/NEW_PLATFORM.md`](docs/NEW_PLATFORM.md) for maintainers. All new platform code belongs in **`~/.local/webhelm/platforms/<slug>`**, checked out from `lalalic/webhelm-actions`, including tests and docs. There is no separate `platforms/` directory in the Skill or npm package. Publishing an Action uses Git, not npm.
 
 ## npm publishing
 

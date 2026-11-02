@@ -5,7 +5,7 @@ import { mkdtempSync, writeFileSync, chmodSync, rmSync, mkdirSync, copyFileSync 
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-const launcher = resolve(import.meta.dirname, '../bin/webhelm');
+const launcher = resolve(import.meta.dirname, '../../skills/webhelm/bin/webhelm');
 
 test('installed Skill launcher invokes published npm runtime with inherited npm package settings', () => {
   const dir = mkdtempSync(join(tmpdir(), 'webhelm-launcher-test-'));

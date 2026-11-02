@@ -1,7 +1,7 @@
 import test, {after} from 'node:test';
 import assert from 'node:assert/strict';
 import {spawnSync,execFileSync} from 'node:child_process';
-import {mkdtempSync,mkdirSync,writeFileSync,rmSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,writeFileSync,rmSync,existsSync} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -61,4 +61,45 @@ test('CLI explicitly rejects --workspace and does not expose Workspace provision
   const forbidden=run('workspace','create','VlogMusic');
   assert.equal(forbidden.status,1);
   assert.match(forbidden.stderr,/unknown command:/);
+});
+
+test('every supported CLI command has detailed side-effect-free help',()=>{
+  const topics = [
+    'help','setup','status','ensure','capacity','migrate','session','session start',
+    'session list','session exec','session heartbeat','session stop','platform',
+    'platform list','platform profile','platform source','platform run',
+    'platform sync','platform publish',
+  ];
+  for(const topic of topics){
+    const parts=topic.split(' ');
+    const direct=run(...parts,'--help');
+    assert.equal(direct.status,0,`${topic}: ${direct.stderr}`);
+    assert.match(direct.stdout,new RegExp(`webhelm ${topic.replaceAll(' ','\\s+')}`));
+    assert.match(direct.stdout,/Usage:/);
+    assert.ok(direct.stdout.length>120,`${topic} help was incomplete`);
+    const indirect=run('help',...parts);
+    assert.equal(indirect.status,0,`${topic}: ${indirect.stderr}`);
+    assert.equal(direct.stdout,indirect.stdout,`${topic}: help variants differ`);
+  }
+  for(const args of [[],['--help'],['help'],['session'],['platform'],
+                      ['session','help','start'],['help','--help'],['help','session','start','--help'],['platform','run','z','new-turn','--help']]){
+    const response=run(...args);
+    assert.equal(response.status,0,`${args.join(' ')}: ${response.stderr}`);
+    assert.match(response.stdout,/Usage:/);
+  }
+});
+
+test('help avoids setup, network and executing Actions even without a checkout',()=>{
+  const empty=path.join(dir,'not-initialized');
+  const probes=[['setup','--help'],['session','stop','--all','--help'],
+                ['session','exec','UNKNOWN','--help'],['platform','sync','--help'],
+                ['platform','publish','--help'],['platform','run','z','new-turn','--help']];
+  for(const args of probes){
+    const response=spawnSync(process.execPath,[cli,...args],{
+      encoding:'utf8',timeout:10000,env:{...process.env,WEBHELM_ACTIONS_HOME:empty,WEBHELM_PLATFORM_DIR:path.join(empty,'platforms')},
+    });
+    assert.equal(response.status,0,`${args.join(' ')}: ${response.stderr}`);
+    assert.match(response.stdout,/Usage:/);
+  }
+  assert.equal(existsSync(empty),false);
 });

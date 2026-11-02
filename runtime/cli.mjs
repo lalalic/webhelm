@@ -9,6 +9,7 @@ import { PLATFORMS, listPlatforms, platformProfile, actionPath, validateConfig }
 import { ACTIONS_DIR, ensureActions, syncActions, publishActions } from './actions-repo.mjs';
 import { migrateConfig, migrateChromeProfile } from './migrate.mjs';
 import { installLoginGuard, stageRuntimeForLoginGuard } from './login-guard.mjs';
+import { cliHelp } from './cli-help.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const CLI_WORKSPACE = 'WebHelm';
@@ -19,30 +20,6 @@ const arg = (items, name) => {
 };
 const has = (items, name) => items.includes(name);
 
-function help() {
-  console.log(`webhelm — browser automation through one Node.js runtime
-
-Usage:
-  webhelm migrate  # after stopping Chrome and the old WebHelm daemon
-  webhelm setup
-  webhelm status
-  webhelm ensure  # verify/recover managed Chrome and WebHelm group, not just daemon ping
-  webhelm capacity  # WebHelm workspace only
-  webhelm session start [--url URL]  # WebHelm workspace only
-  webhelm session list
-  webhelm session heartbeat SESSION_ID  # keep a working Session alive
-  webhelm session exec SESSION_ID [--code-file FILE]   # JavaScript
-  webhelm session stop SESSION_ID|--all
-  webhelm platform list
-  webhelm platform sync
-  webhelm platform publish --message "DESCRIPTION"
-  webhelm platform profile PLATFORM
-  webhelm platform source PLATFORM ACTION
-  webhelm platform run PLATFORM ACTION [--session-id ID | --auto-session] [--config FILE] [--mode async|sync]
-
-Agent workflows should keep their session_id across browser actions and always stop owned sessions.
-`);
-}
 
 function loadConfig(args) {
   const file = arg(args, '--config');
@@ -118,7 +95,14 @@ async function requireCliSession(sessionId) {
 
 async function main(args = process.argv.slice(2)) {
   const [group, command] = args;
-  if (!group || ['--help', '-h', 'help'].includes(group) || has(args, '--help') || has(args, '-h')) return help();
+  if (!group || ['--help', '-h', 'help'].includes(group) || has(args, '--help') || has(args, '-h') ||
+      ((group === 'session' || group === 'platform') && (!command || command === 'help'))) {
+    const topics = group === 'help'
+      ? args.slice(1).filter(item => !['--help', '-h'].includes(item))
+      : ['--help', '-h'].includes(group) ? [] : args.filter(item => !['--help', '-h', 'help'].includes(item));
+    if (group === 'help' && !topics.length && (has(args, '--help') || has(args, '-h'))) topics.push('help');
+    return console.log(cliHelp(topics));
+  }
   rejectWorkspaceOverride(args);
   if (group === 'migrate') {
     await ensureActions(); // ~/.local/webhelm is the Actions Git checkout, never create an empty replacement.

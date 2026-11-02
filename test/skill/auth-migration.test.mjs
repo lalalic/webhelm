@@ -4,8 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
-import {domainMatches,utcCookieTime,difference,collect,sample} from '../scripts/auth-cookie-audit.mjs';
-import {classify,visit} from '../scripts/auth-keepalive-visit.mjs';
+import {domainMatches,utcCookieTime,difference,collect,sample} from '../../skills/webhelm/scripts/auth-cookie-audit.mjs';
+import {classify,visit} from '../../skills/webhelm/scripts/auth-keepalive-visit.mjs';
 
 function cookieFixture(callback){
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'webhelm-cookie-test-'));
