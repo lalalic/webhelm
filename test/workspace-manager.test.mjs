@@ -178,7 +178,7 @@ test("acquireIdentity exposes tabId through controlled lease page", async () => 
   assert.equal(leased.identityTitle, `__WEBHELM_TAB_${leased.tabId}__`);
   assert.match(leased.identityUrl, /helm\.html\?/);
   assert.match(leased.identityUrl, /role=lease/);
-  assert.match(leased.identityUrl, new RegExp(`slot=${leased.tabId}(?:&|$)`));
+  assert.match(leased.identityUrl, new RegExp(`tabId=${leased.tabId}(?:&|$)`));
 
   const state = await manager.status("Harness");
   assert.deepEqual(state.leasedTabIds, [leased.tabId]);
@@ -390,7 +390,7 @@ test("inactive tabs are not reclaimed by the Extension and explicit release retu
   chrome.__setTab(leased.tabId, { lastAccessed: 1, active: false });
   assert.equal(typeof manager.reclaimStaleTabs, "undefined");
   assert.equal((await manager.status("Harness")).leased, 1);
-  assert.equal(leased.idleUrl, chrome.runtime.getURL(`helm.html?workspace=Harness&role=idle&slot=${leased.tabId}`));
+  assert.equal(leased.idleUrl, chrome.runtime.getURL(`helm.html?workspace=Harness&role=idle`));
   await manager.release("Harness", leased.tabId);
   assert.equal((await manager.status("Harness")).idle, 1);
 });
@@ -745,9 +745,26 @@ test("legacy extension URL remains managed and releasable during migration",asyn
   const chrome=fakeChrome(),manager=new WorkspaceManager(chrome);
   const group=await manager.create("Harness",3);
   const id=group.tabIds[0];
-  await chrome.tabs.update(id,{url:chrome.runtime.getURL("workspace.html?workspace=Harness&role=idle&slot=0")});
+  await chrome.tabs.update(id,{url:chrome.runtime.getURL("workspace.html?workspace=Harness&role=idle")});
   assert.equal((await manager.status("Harness")).idle,1);
   const lease=await manager.acquireIdentity("Harness");
   await manager.release("Harness",lease.tabId);
   assert.equal((await manager.status("Harness")).idle,1);
+});
+
+test('independent leased tab IDs return to identical idle URLs without losing ownership', async()=>{
+  const chrome=fakeChrome(),manager=new WorkspaceManager(chrome);
+  const a=await manager.acquireIdentity('WebHelm');
+  const b=await manager.acquireIdentity('WebHelm');
+  assert.notEqual(a.tabId,b.tabId);
+  assert.notEqual(a.identityUrl,b.identityUrl);
+  assert.equal(a.idleUrl,b.idleUrl);
+  assert.equal(a.idleUrl,chrome.runtime.getURL('helm.html?workspace=WebHelm&role=idle'));
+  assert.match(a.identityUrl,new RegExp('tabId='+a.tabId+'(?:&|$)'));
+  assert.match(b.identityUrl,new RegExp('tabId='+b.tabId+'(?:&|$)'));
+  await manager.release('WebHelm',a.tabId);
+  await manager.release('WebHelm',b.tabId);
+  const state=await manager.status('WebHelm');
+  assert.equal(state.leased,0);
+  assert.equal(state.idle,2);
 });

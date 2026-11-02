@@ -65,7 +65,7 @@ async function acquireIdentityLease(session) {
       // Do not navigate/release a tab still owned by another Session.
       throw Error('Workspace extension returned a target already owned by another Session');
     }
-    lease.idleUrl ||= idleUrlFromIdentity(lease.identityUrl, lease.tabId);
+    lease.idleUrl ||= idleUrlFromIdentity(lease.identityUrl);
     return {lease,targetId};
   });
 }

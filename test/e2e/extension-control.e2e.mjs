@@ -114,8 +114,13 @@ try {
   assert.equal(stopped.closed_tabs,0);
   const info=(await cdp('Target.getTargetInfo',{targetId:preservedTargetId})).targetInfo;
   assert.equal(info.targetId,preservedTargetId);
-  assert.match(info.url,/\/helm\.html\?workspace=WebHelm&role=idle/);
+  assert.equal(info.url,`chrome-extension://${EXTENSION_ID}/helm.html?workspace=WebHelm&role=idle`);
   console.log('SESSION CLOSE PASS: original CDP tab retained at helm.html idle:',preservedTargetId);
+
+  const preLease=await rpc(workerSid,'workspace.acquireIdentity',{name:'WebHelm'});
+  assert.match(preLease.identityUrl,new RegExp('tabId='+preLease.tabId+'(?:&|$)'));
+  assert.equal(preLease.idleUrl,`chrome-extension://${EXTENSION_ID}/helm.html?workspace=WebHelm&role=idle`);
+  await rpc(workerSid,'workspace.release',{name:'WebHelm',tabId:preLease.tabId});
 
   const main=await request({op:'start'});
   const custom=await request({op:'start',workspace:'Custom'});
@@ -138,7 +143,7 @@ try {
   const stillMain=(await cdp('Target.getTargetInfo',{targetId:main.target_id})).targetInfo;
   assert.equal(stillMain.targetId,main.target_id);
   const customIdle=(await cdp('Target.getTargetInfo',{targetId:custom.target_id})).targetInfo;
-  assert.match(customIdle.url,/\/helm\.html\?workspace=Custom&role=idle/);
+  assert.equal(customIdle.url,`chrome-extension://${EXTENSION_ID}/helm.html?workspace=Custom&role=idle`);
   console.log('GROUP CLEAN PASS: Custom session stopped; WebHelm session preserved');
 
   const status=await waitFor(async()=>{

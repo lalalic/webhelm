@@ -14,10 +14,23 @@ test('session heartbeat and inflight operations prevent reclaim',()=>{
   assert.equal(staleSession(s,100+SESSION_IDLE_MS*20),false);
 });
 test('idle URL retains workspace and original tab identity',()=>{
-  const identity='chrome-extension://abc/workspace.html?workspace=Neo&role=lease&slot=31';
-  const idle=idleUrlFromIdentity(identity,31);
-  assert.equal(idle,'chrome-extension://abc/workspace.html?workspace=Neo&role=idle&slot=31');
+  const identity='chrome-extension://abc/workspace.html?workspace=Neo&role=lease&tabId=31';
+  const idle=idleUrlFromIdentity(identity);
+  assert.equal(idle,'chrome-extension://abc/workspace.html?workspace=Neo&role=idle');
   assert.equal(sameIdleUrl(idle,idle),true);
   assert.equal(sameIdleUrl(identity,idle),false);
-  assert.throws(()=>idleUrlFromIdentity('https://example.com',31),/invalid/);
+  assert.throws(()=>idleUrlFromIdentity('https://example.com'),/invalid/);
+  assert.throws(()=>idleUrlFromIdentity('chrome-extension://abc/helm.html?role=lease&tabId=31'),/workspace/);
+});
+
+test('new Lease tabId is absent from idle URL',()=>{
+  const lease = 'chrome-extension://abc/helm.html?workspace=WebHelm&role=lease&tabId=483';
+  const idle = 'chrome-extension://abc/helm.html?workspace=WebHelm&role=idle';
+  assert.equal(idleUrlFromIdentity(lease), idle);
+  assert.equal(idleUrlFromIdentity(lease.replace('483','999')), idle);
+});
+
+test('unrelated Lease query parameters are never carried into idle URLs',()=>{
+  const lease='chrome-extension://abc/helm.html?workspace=WebHelm&role=lease&tabId=41&trace=hello';
+  assert.equal(idleUrlFromIdentity(lease),'chrome-extension://abc/helm.html?workspace=WebHelm&role=idle');
 });

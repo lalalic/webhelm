@@ -5,8 +5,8 @@ process.env.WEBHELM_CDP_URL='http://127.0.0.1:9222';
 process.env.WEBHELM_NO_PROFILE_EXTENSION_PROBE='1';
 
 const base='chrome-extension://kkkpgmhpoeceojalkpfdidffdfnlgdog/workspace.html';
-const idle=(id)=>`${base}?workspace=Harness&role=idle&slot=${id}`;
-const lease=(id)=>`${base}?workspace=Harness&role=lease&slot=${id}`;
+const idle=()=>`${base}?workspace=Harness&role=idle`;
+const lease=(id)=>`${base}?workspace=Harness&role=lease&tabId=${id}`;
 class FakeBrowser extends EventTarget {
   static OPEN=1;
   readyState=0;

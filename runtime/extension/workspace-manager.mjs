@@ -18,8 +18,8 @@ export function normalizePoolSize(value, fallback = 8) {
   return number;
 }
 
-function queryString(workspace, slot) {
-  return new URLSearchParams({ workspace, role: "idle", slot: String(slot) }).toString();
+function queryString(workspace) {
+  return new URLSearchParams({ workspace, role: "idle" }).toString();
 }
 
 export class WorkspaceManager {
@@ -41,8 +41,8 @@ export class WorkspaceManager {
     if (Number.isInteger(id)) this.ownedTabIds.add(id);
   }
 
-  idleUrl(workspace, slot) {
-    return this.chrome.runtime.getURL(`helm.html?${queryString(workspace, slot)}`);
+  idleUrl(workspace) {
+    return this.chrome.runtime.getURL(`helm.html?${queryString(workspace)}`);
   }
 
   identityTitle(tabId) {
@@ -53,7 +53,7 @@ export class WorkspaceManager {
     const query = new URLSearchParams({
       workspace,
       role: "lease",
-      slot: String(tabId),
+      tabId: String(tabId),
     }).toString();
     return this.chrome.runtime.getURL(`helm.html?${query}`);
   }
@@ -67,7 +67,7 @@ export class WorkspaceManager {
       return {
         workspace: parsed.searchParams.get("workspace") || "",
         role: parsed.searchParams.get("role") || "",
-        slot: parsed.searchParams.get("slot") || "",
+        tabId: parsed.searchParams.get("tabId") || "",
       };
     } catch {
       return null;
@@ -371,7 +371,7 @@ export class WorkspaceManager {
     // Chrome groups are created by grouping a tab. Keep one seed tab so the
     // workspace has an identity, then grow the physical pool on demand.
     const created = [await this.chrome.tabs.create({
-      url: this.idleUrl(name, 0),
+      url: this.idleUrl(name),
       active: false,
     })];
     for (const tab of created) this.markOwned(tab.id);
@@ -489,7 +489,7 @@ export class WorkspaceManager {
       for (const tab of tabs) this.markOwned(tab.id);
       if (group) await this.chrome.tabGroups.update(group.id, {title: newName});
       for (const tab of tabs) {
-        await this.chrome.tabs.update(tab.id, {url: this.idleUrl(newName, tab.id), active: false});
+        await this.chrome.tabs.update(tab.id, {url: this.idleUrl(newName), active: false});
         updated.push(tab);
       }
       config.workspaces[newName] = config.workspaces[oldName];
@@ -538,7 +538,7 @@ export class WorkspaceManager {
     let tab = idle[0];
     if (!tab) {
       tab = await this.chrome.tabs.create({
-        url: this.idleUrl(normalizedName, tabs.length),
+        url: this.idleUrl(normalizedName),
         active: false,
       });
       this.markOwned(tab.id);
@@ -557,7 +557,7 @@ export class WorkspaceManager {
       tabId: updated.id,
       identityTitle,
       identityUrl,
-      idleUrl: this.idleUrl(normalizedName, updated.id),
+      idleUrl: this.idleUrl(normalizedName),
       active: Boolean(updated.active),
     };
   }
@@ -579,7 +579,7 @@ export class WorkspaceManager {
     let tab = idle[0];
     if (!tab) {
       tab = await this.chrome.tabs.create({
-        url: this.idleUrl(normalizedName, tabs.length),
+        url: this.idleUrl(normalizedName),
         active: false,
       });
       // Group reconciliation can fire before the extension idle URL is visible.
@@ -614,7 +614,7 @@ export class WorkspaceManager {
     } else {
       try {
         await this.chrome.tabs.update(wanted, {
-          url: this.idleUrl(normalizedName, wanted),
+          url: this.idleUrl(normalizedName),
           active: false,
         });
         await this.waitForIdleTab(wanted, normalizedName);
@@ -623,7 +623,7 @@ export class WorkspaceManager {
         // the extension idle page. Preserve pool capacity by creating a clean
         // idle replacement in the same group before removing the stale tab.
         const replacement = await this.chrome.tabs.create({
-          url: this.idleUrl(normalizedName, wanted),
+          url: this.idleUrl(normalizedName),
           active: false,
         });
         this.markOwned(replacement.id);
