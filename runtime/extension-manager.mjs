@@ -86,12 +86,13 @@ export async function ensureExtensionLoaded(browser, {skip=false,extensionDir=EX
   if(skip)return {skipped:true};
   if(!allowUpdate && (!fs.existsSync(path.join(extensionDir,'manifest.json')) || !identical(extensionDir)))
     throw Error('Extension update deferred: active browser Sessions must finish before staging new content');
-  const {path:dir,version}=allowUpdate?stageExtension(extensionDir):{path:extensionDir,version:extensionVersion};
+  const {path:dir,version,updated=false}=allowUpdate?stageExtension(extensionDir):{path:extensionDir,version:extensionVersion};
   let modern=false, installed;
   try{
     const state=await browser.send('Extensions.getExtensions');
     modern=true;installed=state.extensions?.find(e=>e.id===EXTENSION_ID);
-    if(!installed || !installed.enabled || installed.version!==version || canonicalPath(installed.path)!==canonicalPath(dir)){
+    // Updating files at the same directory and version also needs a worker reload.
+    if(updated || !installed || !installed.enabled || installed.version!==version || canonicalPath(installed.path)!==canonicalPath(dir)){
       if(!allowUpdate)throw Error('Extension reload deferred: active browser Sessions must finish');
       const loaded=await browser.send('Extensions.loadUnpacked',{path:dir});
       if(loaded.id!==EXTENSION_ID)throw Error('Chrome loaded an unexpected extension ID');

@@ -53,6 +53,27 @@ test('daemon verifies modern Chrome extension and installs via browser CDP when 
   assert.ok(!calls.includes('Extensions.loadUnpacked'),'do not reload on every request');
 });
 
+test('extension content change at same path and manifest version triggers reload',async t=>{
+  const root=mkdtempSync(path.join(os.tmpdir(),'webhelm-reload-on-content-'));
+  t.after(()=>rmSync(root,{recursive:true,force:true}));
+  const extensionDir=path.join(root,'extension');
+  stageExtension(extensionDir);
+  writeFileSync(path.join(extensionDir,'helm.html'),'valid identity but stale content');
+  let reloads=0;
+  const b={async send(method){
+    if(method==='Extensions.getExtensions')return {extensions:[{id:EXTENSION_ID,enabled:true,version:extensionVersion,path:extensionDir}]};
+    if(method==='Extensions.loadUnpacked'){reloads++;return {id:EXTENSION_ID}};
+    if(method==='Target.getTargets')return {targetInfos:[{targetId:'worker',type:'service_worker',url:`chrome-extension://${EXTENSION_ID}/service-worker.mjs`}]};
+    if(method==='Target.attachToTarget')return {sessionId:'attached'};
+    if(method==='Runtime.evaluate')return {result:{value:extensionVersion}};
+    return {};
+  }};
+  await ensureExtensionLoaded(b,{extensionDir});
+  assert.equal(reloads,1);
+  await ensureExtensionLoaded(b,{extensionDir});
+  assert.equal(reloads,1,'unchanged extension must not reload repeatedly');
+});
+
 test('Chrome 138 uses launch flags; incorrect running extension is rejected',async t=>{
   const dir=mkdtempSync(path.join(os.tmpdir(),'webhelm-chrome138-mock-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));
   const extensionDir=path.join(dir,'extension');
