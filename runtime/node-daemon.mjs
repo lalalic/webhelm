@@ -8,7 +8,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { invokePlatformAction } from './platforms.mjs';
 import { ChatGPTQueue } from './chatgpt/chatgpt-queue.mjs';
-import { idleUrlFromIdentity, sameIdleUrl, staleSession } from './session-lifecycle.mjs';
+import { idleUrlFromIdentity, sameIdleUrl, staleSession, withinDeadline, SessionDeadlineError } from './session-lifecycle.mjs';
 import { stopMatchingSessions } from './session-control.mjs';
 import { ensureManagedChrome } from './chrome.mjs';
 import { ensureExtensionLoaded } from './extension-manager.mjs';
@@ -263,6 +263,13 @@ function makeHelpers(s){
   async current_url(){return (await h.page_info()).url},
   async title(){return (await h.page_info()).title}
  };
+ // Revoke even helper references retained by unresolved async VM scripts.
+ for(const [name,helper] of Object.entries(h)){
+   if(typeof helper==='function') h[name]=(...args)=>{
+     if(s.poisoned)throw Error('Session execution expired');
+     return helper(...args);
+   };
+ }
  Object.defineProperty(h,'target_id',{get:()=>s.targetId});
  Object.defineProperty(h,'targetId',{get:()=>s.targetId});
  return h;
@@ -363,7 +370,7 @@ async function createSession(req={}) {
   const s={session_id:sid, workspace:req.workspace||await defaultWorkspaceName(), targetId:null,
     rootTargetId:null, workspaceSupported:false,targets:new Set(), attachments:new Map(), eventDisposers:new Map(),
     leasedTabs:new Map(), idleUrls:new Map(), mutex:new Mutex(), events:[], namespace:null,context:null,
-    inFlight:0, closing:false, last_used_at:Date.now()};
+    inFlight:0, closing:false, poisoned:false, last_used_at:Date.now()};
   let targetId,lease;
   try {
     if(await extensionSupported()) {
@@ -411,7 +418,7 @@ async function extensionSupported() {
 
 async function execute(req) {
   const s=sessions.get(req.session_id);
-  if(!s || s.closing)throw Error(`unknown session_id: ${req.session_id} (missing or closing)`);
+  if(!s || s.closing || s.poisoned)throw Error(`unknown session_id: ${req.session_id} (missing or closing)`);
   s.inFlight++;
   try {return await s.mutex.run(async()=>{
     if(s.closing)throw Error('session closing');
@@ -427,12 +434,15 @@ async function execute(req) {
       if(last&&!last.endsWith(';')&&!/^(return|throw|if|for|while|function|class|\}|\/\/)/.test(last))lines[lines.length-1]=`return (${last})`;
       source=lines.join('\n');
       const script=new vm.Script(`(async()=>{${source}\n})()`,{filename:'<webhelm-session>'});
-      const result=await script.runInContext(s.context,{timeout:30000});
+      const timeoutMs=Math.max(30,Math.min(30000,Number(process.env.WEBHELM_SESSION_EXEC_TIMEOUT_MS)||30000));
+      const result=await withinDeadline(
+        Promise.resolve().then(()=>script.runInContext(s.context,{timeout:timeoutMs})),timeoutMs,'Session exec');
+      if(s.poisoned)throw Error('Session expired during execution');
       Object.assign(s.namespace,sandbox);
       const out={session_id:s.session_id,workspace:s.workspace,target_id:s.targetId,ok:true,stdout:logs.join('\n'),stderr:errors.join('\n')};
       if(result!==undefined)Object.assign(out,jsonSafe(result));
       return out;
-    }catch(e){return {session_id:s.session_id,workspace:s.workspace,target_id:s.targetId,ok:false,stdout:logs.join('\n'),stderr:errors.join('\n'),error:`${e.name}: ${e.message}`}}
+    }catch(e){if(e instanceof SessionDeadlineError || (e?.message||'').includes('Script execution timed out'))s.poisoned=true;return {session_id:s.session_id,workspace:s.workspace,target_id:s.targetId,ok:false,stdout:logs.join('\n'),stderr:errors.join('\n'),error:`${e.name}: ${e.message}`}}
   });} finally {s.inFlight--;s.last_used_at=Date.now();}
 }
 
@@ -456,6 +466,7 @@ async function navigateIdle(browser,s,targetId,idleUrl){
 async function closeSessionOwned(s){
   if(sessions.get(s.session_id)!==s)return {session_id:s.session_id,already_closed:true};
   s.closing=true;
+  s.poisoned=true; // Revoke delayed helpers after terminal close.
   let release_error=null;
   try {
     const returnedTabs=s.leasedTabs.size;
@@ -503,10 +514,17 @@ async function stopSession(sid){
   const s=sessions.get(sid);
   if(!s)throw Error(`unknown session_id: ${sid}`);
   s.closing=true;
-  // Do not hold the workspace allocation lock while an in-flight operation
-  // might be acquiring a new tab: that would deadlock its Session mutex.
-  await s.mutex.run(async()=>{});
-  return leaseMutex(s.workspace).run(()=>closeSessionOwned(s));
+  // Bound both drain and release. Never strand closing=true after failure.
+  const timeoutMs=Math.max(50,Math.min(90000,Number(process.env.WEBHELM_SESSION_STOP_TIMEOUT_MS)||60000));
+  try {
+    const deadline=Date.now()+timeoutMs;
+    await withinDeadline(s.mutex.run(async()=>{}),timeoutMs,'Session stop drain');
+    return await withinDeadline(leaseMutex(s.workspace).run(()=>closeSessionOwned(s)),
+      Math.max(1,deadline-Date.now()),'Session stop release');
+  }catch(error){
+    if(sessions.get(sid)===s){s.closing=false;s.poisoned=true;}
+    throw error;
+  }
 }
 
 function heartbeatSession(sid){
@@ -629,25 +647,30 @@ async function runPlatform(req) {
   const sid=started.session_id;
   if (!sid) throw Error('platform run requires a session_id or auto_session');
   const session=sessions.get(sid);
-  if (!session) throw Error(`unknown session_id: ${sid}`);
+  if (!session || session.poisoned || session.closing) throw Error(`unknown session_id: ${sid}`);
   let result, cleanup;
   session.inFlight++;
   try {
     result=await session.mutex.run(async()=>{
       const logs=[];
       const helpers=makeHelpers(session);
-      helpers.enqueueChatGPTTurn=request=>getChatGPTQueue().enqueue(request);
+      helpers.enqueueChatGPTTurn=request=>{
+        if(session.poisoned)throw Error('Session execution expired');
+        return getChatGPTQueue().enqueue(request);
+      };
       helpers.chatgptQueue=getChatGPTQueue();
       try {
-        const value=await invokePlatformAction(platform,action,{
+        const actionTimeoutMs=Math.max(50,Math.min(300000,Number(process.env.WEBHELM_PLATFORM_TIMEOUT_MS)||180000));
+        const value=await withinDeadline(Promise.resolve().then(()=>invokePlatformAction(platform,action,{
           helpers, config,
           log:(...items)=>logs.push(items.map(v=>typeof v==='string'?v:JSON.stringify(v)).join(' ')),
-        });
+        })),actionTimeoutMs,'Platform action');
         // Keep the legacy stdout JSON receipt for NeoY/Relay callers, while
         // retaining the structured `value` for new integrations. Do not print
         // a duplicate receipt if the Action already logged its JSON result.
         return {ok:true,stdout:actionOutput(logs,value),stderr:'',value};
       } catch(error) {
+        if(error instanceof SessionDeadlineError)session.poisoned=true;
         return {ok:false,stdout:logs.join('\n').slice(-40000),stderr:'',error:`${error.name}: ${error.message}`};
       }
     });
@@ -668,18 +691,19 @@ async function runPlatform(req) {
 
 export async function handle(req){switch(req.op){case'ping':return {ok:true,pid:process.pid,version:PACKAGE_VERSION,queue_paused:process.env.WEBHELM_CHATGPT_QUEUE_PAUSED==='1',session_count:sessions.size,managed_chrome:managedChrome||{profile_dir:PROFILE_DIR, endpoint:process.env.WEBHELM_CDP_URL||'http://127.0.0.1:9222',reused:true},chrome_guard:managedChromeGuard.status()};case'guard-check':{let status=await managedChromeGuard.tick();for(let retry=0;retry<6 && status.status!=='healthy' && !status.skipped;retry++){await delay(800);status=await managedChromeGuard.tick();}if(status.status!=='healthy' && !status.skipped)throw Error(`WebHelm Chrome health degraded: ${status.error||status.status}`);return {ok:true,chrome_guard:status};}case'heartbeat':return heartbeatSession(req.session_id);case'list':return {session_count:sessions.size,sessions:[...sessions.values()].map(s=>({session_id:s.session_id,workspace:s.workspace,target_id:s.targetId,last_used_at:s.last_used_at}))};case'start':return createSession(req);case'exec':return execute(req);case'stop':return stopSession(req.session_id);case'stop-all':return stopAllSessions();case'stop-workspace':{if(typeof req.workspace!=='string'||!req.workspace.trim())throw Error('workspace required');return stopWorkspaceSessions(req.workspace)}case'capacity':return workspaceCapacity(req);case'workspace-create':case'workspace-resize':case'workspace-delete':return workspaceOp(req);case'chatgpt-new-turn-enqueue':return getChatGPTQueue().enqueue(req.config);case'platform-run':return runPlatform(req);default:throw Error(`unknown op: ${req.op}`)}}
 function serve(conn) {
-  let buffer = '';
+  let buffer = '', dispatched = false;
   conn.setEncoding('utf8');
   conn.on('data', async (chunk) => {
     buffer += chunk;
     const newline = buffer.indexOf('\n');
-    if (newline < 0) return;
+    if (newline < 0 || dispatched) return;
+    dispatched=true;
     const raw = buffer.slice(0, newline);
     try {
       const reply = await handle(JSON.parse(raw));
-      conn.end(JSON.stringify(reply) + '\n');
+      if(!conn.destroyed)conn.end(JSON.stringify(reply) + '\n');
     } catch (error) {
-      conn.end(JSON.stringify({ error: `${error.name}: ${error.message}` }) + '\n');
+      if(!conn.destroyed)conn.end(JSON.stringify({ error: `${error.name}: ${error.message}` }) + '\n');
     }
   });
 }
@@ -688,7 +712,47 @@ async function main(){fs.mkdirSync(RUNTIME,{recursive:true,mode:0o700});let lock
   const controlTimer=setInterval(()=>pollExtensionControl(),3000);
   pollExtensionControl().catch(()=>{});
   const cleanup=async()=>{if(shuttingDown)return;shuttingDown=true;clearInterval(controlTimer);managedChromeGuard.stop();if(chatgptQueue)await chatgptQueue.shutdown().catch(()=>{});await handle({op:'stop-all'}).catch(()=>{});socket?.close();try{if(fs.existsSync(SOCKET))fs.unlinkSync(SOCKET)}catch{}try{fs.closeSync(lockfd);fs.unlinkSync(LOCK)}catch{}process.exit(0)};process.on('SIGTERM',cleanup);process.on('SIGINT',cleanup)}
-async function request(payload,ensure=true){if(ensure)await ensureDaemon();return new Promise((resolve,reject)=>{const c=net.createConnection(SOCKET);let data='';c.setEncoding('utf8');c.on('connect',()=>c.write(JSON.stringify(payload)+'\n'));c.on('data',x=>{data+=x;if(!data.includes('\n'))return;c.end();try{const r=JSON.parse(data);r.error?reject(Error(r.error)):resolve(r)}catch(e){reject(e)}});c.on('error',reject)})}
+// IPC duration is independent of the daemon's JS/Action execution timeout.
+// A wedged daemon can no longer strand CLI processes indefinitely.
+export function ipcTimeoutMs(op) {
+  const override=Number(process.env.WEBHELM_IPC_TIMEOUT_MS);
+  if(Number.isFinite(override) && override>0)
+    return Math.max(50,Math.min(300000,override));
+  return ({ping:5000,heartbeat:15000,list:15000,capacity:30000,
+    stop:90000,'stop-all':120000,'stop-workspace':120000,
+    exec:45000,'platform-run':240000,start:90000}[op] || 60000);
+}
+async function request(payload,ensure=true){
+  if(ensure)await ensureDaemon();
+  return new Promise((resolve,reject)=>{
+    const conn=net.createConnection(SOCKET);
+    const op=payload?.op||'unknown';
+    let data='',settled=false,deadlineTimer;
+    const finish=(error,result)=>{
+      if(settled)return;
+      settled=true;
+      clearTimeout(deadlineTimer);
+      conn.destroy();
+      if(error)reject(error);
+      else resolve(result);
+    };
+    conn.setEncoding('utf8');
+    deadlineTimer=setTimeout(()=>finish(Error('WebHelm IPC '+op+' timed out')),ipcTimeoutMs(op));
+    conn.on('connect',()=>conn.write(JSON.stringify(payload)+'\n'));
+    conn.on('data',chunk=>{
+      data+=chunk;
+      if(data.length>8_000_000)return finish(Error('WebHelm IPC response too large'));
+      const newline=data.indexOf('\n');
+      if(newline<0)return;
+      try{
+        const result=JSON.parse(data.slice(0,newline));
+        result.error?finish(Error(String(result.error))):finish(null,result);
+      }catch(error){finish(error)}
+    });
+    conn.on('end',()=>{if(!settled)finish(Error('WebHelm IPC '+op+' closed without response'))});
+    conn.on('error',error=>finish(error));
+  });
+}
 export async function ensureDaemon(){try{const p=await request({op:'ping'},false);if(p.ok)return p}catch{}if(!process.env.WEBHELM_CDP_URL)requireMigratedConfig();fs.mkdirSync(RUNTIME,{recursive:true,mode:0o700});if(fs.existsSync(LOCK)){let owner=0;try{owner=Number(fs.readFileSync(LOCK,'utf8').trim())}catch{};let alive=false;if(owner>0)try{process.kill(owner,0);alive=true}catch{};if(alive)throw Error(`daemon owner lock exists but socket is unreachable; refusing duplicate startup (${LOCK})`);fs.unlinkSync(LOCK)}const child=await import('node:child_process');const log=fs.openSync(path.join(RUNTIME,'session-node.log'),'a');child.spawn(process.execPath,[fileURLToPath(import.meta.url),'daemon'],{detached:true,stdio:['ignore',log,log],env:process.env}).unref();for(let i=0;i<100;i++){await delay(100);try{const p=await request({op:'ping'},false);if(p.ok)return p}catch{}}throw Error(`WebHelm Node daemon did not start; see ${path.join(RUNTIME,'session-node.log')}`)}
 if(process.argv[2]==='daemon')main().catch(e=>{console.error(e);process.exit(1)});
 export {request,SOCKET,RUNTIME};

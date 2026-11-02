@@ -10,6 +10,8 @@ test('session heartbeat and inflight operations prevent reclaim',()=>{
   assert.equal(staleSession(s,100+SESSION_IDLE_MS*10),false);
   s.inFlight=0;s.last_used_at=100+SESSION_IDLE_MS*10;
   assert.equal(staleSession(s,100+SESSION_IDLE_MS*10),false);
+  s.poisoned=true;
+  assert.equal(staleSession(s,100+SESSION_IDLE_MS*10),true,'Poisoned Session is collectible on next Tab request');
   s.closing=true;
   assert.equal(staleSession(s,100+SESSION_IDLE_MS*20),false);
 });

@@ -1,9 +1,32 @@
 // A Session is live only while its owner performs operations or renews its heartbeat.
 export const SESSION_IDLE_MS = 5 * 60 * 1000;
 
+export class SessionDeadlineError extends Error {
+  constructor(operation, milliseconds) {
+    super(operation + ' exceeded ' + milliseconds + 'ms deadline');
+    this.name = 'SessionDeadlineError';
+  }
+}
+
+// A VM timeout cannot terminate an unresolved async Promise.
+// Callers must revoke Session helpers when a deadline expires.
+export async function withinDeadline(promise, milliseconds, operation) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new SessionDeadlineError(operation, milliseconds)), milliseconds);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export function staleSession(session, now = Date.now(), ttl = SESSION_IDLE_MS) {
   return !session.closing && !(session.inFlight > 0) &&
-    now - session.last_used_at >= ttl;
+    (session.poisoned === true || now - session.last_used_at >= ttl);
 }
 
 export function idleUrlFromIdentity(identityUrl) {

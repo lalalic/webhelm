@@ -43,7 +43,9 @@ class FakeBrowser extends EventTarget {
       }else if(src.startsWith('({url:location.href'))result={result:{value:{url:target?.url,title:'test',readyState:'complete'}}};
       else result={result:{value:true}};
     }
-    queueMicrotask(()=>this.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({id:req.id,result})})));
+    const respond=()=>this.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({id:req.id,result})}));
+    if(method==='Runtime.evaluate' && params.expression?.includes('data-ref') && this.delaySnapshot){setTimeout(respond,250)}
+    else queueMicrotask(respond);
   }
 }
 
@@ -92,5 +94,46 @@ test('session lifecycle: managed stop reuses physical tab; orphan reclaimed; hea
     const resolved=await Promise.race([Promise.allSettled([work,close]),new Promise((_,reject)=>setTimeout(()=>reject(Error('deadlock')),3500))]);
     assert.equal(resolved[1].status,'fulfilled');
     assert.equal(resolved[1].value.returned_to_idle,true);
-  } finally {Date.now=previousNow;globalThis.fetch=previousFetch;globalThis.WebSocket=previousWs;}
+
+    process.env.WEBHELM_SESSION_EXEC_TIMEOUT_MS='75';
+    const hung=await handle({op:'start',url:'https://test.invalid/hung'});
+    const failed=await handle({op:'exec',session_id:hung.session_id,code:'await new Promise(()=>{})'});
+    assert.equal(failed.ok,false);
+    assert.match(failed.error,/SessionDeadlineError: Session exec exceeded/);
+    assert.equal((await handle({op:'stop',session_id:hung.session_id})).returned_to_idle,true);
+
+    const orphan=await handle({op:'start',url:'https://test.invalid/orphan'});
+    browser.delaySnapshot=true;
+    const snap=await handle({op:'exec',session_id:orphan.session_id,code:'await snapshot()'});
+    assert.equal(snap.ok,false,'A delayed snapshot must return timeout');
+    browser.delaySnapshot=false;
+    const replacement=await handle({op:'start',url:'https://test.invalid/replacement'});
+    assert.equal(replacement.target_id,orphan.target_id);
+    assert.equal((await handle({op:'list'})).sessions.some(x=>x.session_id===orphan.session_id),false);
+    await handle({op:'stop',session_id:replacement.session_id});
+
+    // Timeout must revoke helpers retained by the still-running async script.
+    const late=await handle({op:'start',url:'https://test.invalid/late'});
+    const expired=await handle({op:'exec',session_id:late.session_id,
+      code:'await sleep(250); await goto_url("https://test.invalid/unsafe-late-operation");'});
+    assert.equal(expired.ok,false);
+    const next=await handle({op:'start',url:'https://test.invalid/safe-next'});
+    await new Promise(resolve=>setTimeout(resolve,300));
+    assert.equal(browser.operations.some(x=>x.url==='https://test.invalid/unsafe-late-operation'),false,
+      'Late callback must not navigate after Session expired');
+    await handle({op:'stop',session_id:next.session_id});
+
+    // Explicit stop can time out while a legitimate exec still holds its
+    // mutex. It must clear closing, poison the lease and allow next-Tab GC.
+    process.env.WEBHELM_SESSION_EXEC_TIMEOUT_MS='250';
+    process.env.WEBHELM_SESSION_STOP_TIMEOUT_MS='60';
+    const blocked=await handle({op:'start',url:'https://test.invalid/blocked'});
+    const execution=handle({op:'exec',session_id:blocked.session_id,code:'await new Promise(()=>{})'});
+    await new Promise(resolve=>setTimeout(resolve,35));
+    await assert.rejects(handle({op:'stop',session_id:blocked.session_id}),/Session stop drain exceeded/);
+    assert.equal((await execution).ok,false);
+    const recycled=await handle({op:'start',url:'https://test.invalid/recycled'});
+    assert.equal(recycled.target_id,blocked.target_id,'Timed-out stop must not block next allocation');
+    await handle({op:'stop',session_id:recycled.session_id});
+  } finally {delete process.env.WEBHELM_SESSION_STOP_TIMEOUT_MS;delete process.env.WEBHELM_SESSION_EXEC_TIMEOUT_MS;Date.now=previousNow;globalThis.fetch=previousFetch;globalThis.WebSocket=previousWs;}
 });
