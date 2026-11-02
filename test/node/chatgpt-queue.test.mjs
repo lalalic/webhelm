@@ -186,6 +186,18 @@ test("queued items can be cancelled but active work cannot", async (t) => {
   assert.equal(q.list().items.length,1);
 });
 
+test("WAITING work is not eligible for enqueue-time merge", async (t) => {
+  const {q,root}=fixture();
+  t.after(async()=>{await q.shutdown();rmSync(root,{recursive:true,force:true});});
+  const first=q.enqueue({thread_id:"A",message:"first",idempotency_key:"waiting-1",mergeable:true}).queue_id;
+  const owner="worker";
+  q.claim(owner);
+  q.transition(first,owner,"CHECKING","WAITING",{receipt:"busy"});
+  const second=q.enqueue({thread_id:"A",message:"second",idempotency_key:"waiting-2",mergeable:true}).queue_id;
+  assert.notEqual(second,first);
+  assert.equal(q.rows().find(row=>row.id===first).message,"first");
+});
+
 test("dispatcher runs distinct threads in parallel and caps concurrency at four", async (t) => {
   const root=mkdtempSync(join(tmpdir(),"chatgpt-parallel-"));
   let active=0, maximum=0, release;

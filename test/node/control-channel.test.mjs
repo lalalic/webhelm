@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {ControlChannel} from '../../runtime/extension/control-channel.mjs';
 import {summarizeWorkspaces} from '../../runtime/extension/workspace-summary.mjs';
+import {createControlRpc} from '../../runtime/extension/control-rpc.mjs';
 
 const sessions = [
   {session_id:'a123456',workspace:'Harness',last_used_at:100},
@@ -31,6 +32,19 @@ test('daemon heartbeat reports only fresh session state',async()=>{
   advance(8000);
   assert.equal((await channel.status()).connected,false);
   await assert.rejects(channel.requestStop('stop-all'),/not responding/);
+});
+
+test('service-worker control RPC forwards queue state through heartbeat and poll',async()=>{
+  const {channel}=build();
+  const queue=[{id:'q-1',state:'QUEUED',attempts:0},{id:'q-2',state:'WAITING',attempts:1}];
+  let badgeRefreshes=0;
+  const rpc=createControlRpc({control:channel,manager:{async list(){return {workspaces:[]};}},
+    summarizeWorkspaces, scheduleBadge(){badgeRefreshes++;}});
+  await rpc('workspace.control.heartbeat',{sessions,queue});
+  assert.deepEqual((await channel.status()).queue,queue);
+  assert.equal(await rpc('workspace.control.poll',{sessions,queue}),null);
+  assert.deepEqual((await channel.status()).queue,queue);
+  assert.equal(badgeRefreshes,1);
 });
 
 test('stop group targets only requested group and is not silently repeated',async()=>{
