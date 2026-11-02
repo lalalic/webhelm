@@ -182,8 +182,41 @@ test("queued items can be cancelled but active work cannot", async (t) => {
   const second=q.enqueue({thread_id:"B",message:"second",idempotency_key:"keep-me"}).queue_id;
   assert.deepEqual(q.cancel(first),{ok:true,queue_id:first,state:"CANCELLED"});
   assert.equal(q.claim("worker").id,second);
-  assert.match(q.cancel(second).error,/only queued/);
+  assert.match(q.cancel(second).error,/running or uncertain/);
   assert.equal(q.list().items.length,1);
+});
+
+test("queue description supplies a short title and safe thread URL without payload", async (t) => {
+  const {q,root}=fixture();
+  t.after(async()=>{await q.shutdown();rmSync(root,{recursive:true,force:true});});
+  const first=q.enqueue({thread_id:'t /123',project_id:'p /456',message:'Summarize this video\nprivate next line',idempotency_key:'display-1'});
+  const item=q.list().items.find(item=>item.id===first.queue_id);
+  assert.equal(item.title,'Summarize this video');
+  assert.equal(item.url,'https://chatgpt.com/g/p%20%2F456/c/t%20%2F123');
+  assert.doesNotMatch(item.url,/Summarize|private|prompt/);
+  const long=q.enqueue({thread_id:'long',message:'A'.repeat(200),idempotency_key:'display-2'});
+  const title=q.list().items.find(item=>item.id===long.queue_id).title;
+  assert.ok(title.length<=52);
+  assert.ok(title.endsWith('…'));
+});
+
+test("remove permits pre-send WAITING and BLOCKED, but never SENDING or UNCERTAIN", async (t) => {
+  const {q,root}=fixture();
+  t.after(async()=>{await q.shutdown();rmSync(root,{recursive:true,force:true});});
+  const waiting=q.enqueue({thread_id:'waiting',message:'a',idempotency_key:'wait'}).queue_id;
+  q.claim('worker');
+  q.transition(waiting,'worker','CHECKING','WAITING',{receipt:'page busy'});
+  assert.equal(q.cancel(waiting).state,'CANCELLED');
+  const blocked=q.enqueue({thread_id:'blocked',message:'b',idempotency_key:'blocked'}).queue_id;
+  q.claim('worker2');
+  q.transition(blocked,'worker2','CHECKING','BLOCKED',{receipt:'page blocked'});
+  assert.equal(q.cancel(blocked).state,'CANCELLED');
+  const sending=q.enqueue({thread_id:'sending',message:'c',idempotency_key:'sending'}).queue_id;
+  q.claim('worker3');
+  q.transition(sending,'worker3','CHECKING','SENDING');
+  assert.equal(q.cancel(sending).ok,false);
+  q.transition(sending,'worker3','SENDING','UNCERTAIN',{receipt:'unknown'});
+  assert.equal(q.cancel(sending).ok,false);
 });
 
 test("WAITING work is not eligible for enqueue-time merge", async (t) => {

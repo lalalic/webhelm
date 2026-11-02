@@ -47,6 +47,34 @@ test('service-worker control RPC forwards queue state through heartbeat and poll
   assert.equal(badgeRefreshes,1);
 });
 
+test('toolbar status resolves current tab titles, activates only an owned session tab, and opens only listed HTTPS URLs',async()=>{
+  const {channel}=build();
+  const tabCalls=[];
+  const chromeApi={
+    tabs:{
+      async get(tabId){tabCalls.push(['get',tabId]);if(tabId===22)return {id:22,title:'Real ChatGPT Tab',windowId:3};throw Error('Missing tab');},
+      async update(tabId,options){tabCalls.push(['update',tabId,options]);},
+      async create(options){tabCalls.push(['create',options]);},
+    },
+    windows:{async update(windowId,options){tabCalls.push(['window',windowId,options]);}},
+  };
+  const rpc=createControlRpc({control:channel,chromeApi,manager:{async list(){return {workspaces:[{name:'Harness',initialized:true,poolSize:3,idle:2,leased:1}]};}},summarizeWorkspaces,scheduleBadge(){}});
+  await channel.poll([{session_id:'active',workspace:'Harness',tabId:22},{session_id:'stale',workspace:'Harness',tabId:23}],
+    [{id:'q1',state:'QUEUED',title:'Short message',url:'https://chatgpt.com/c/a'},
+     {id:'bad',state:'QUEUED',url:'javascript:alert(1)'}]);
+  const state=await rpc('workspace.control.status');
+  assert.equal(state.workspaces[0].sessions[0].tab_title,'Real ChatGPT Tab');
+  assert.equal(state.workspaces[0].sessions[1].tabId,null);
+  assert.deepEqual(await rpc('workspace.control.activateTab',{sessionId:'active'}),{ok:true});
+  await assert.rejects(rpc('workspace.control.activateTab',{sessionId:'unknown'}),/no longer active/);
+  assert.deepEqual(await rpc('workspace.control.openQueue',{queueId:'q1'}),{ok:true});
+  await assert.rejects(rpc('workspace.control.openQueue',{queueId:'bad'}),/HTTPS/);
+  await assert.rejects(rpc('workspace.control.openQueue',{queueId:'missing'}),/no longer available/);
+  assert.deepEqual(tabCalls.slice(-3),[
+    ['update',22,{active:true}],['window',3,{focused:true}],['create',{url:'https://chatgpt.com/c/a',active:true}],
+  ]);
+});
+
 test('stop group targets only requested group and is not silently repeated',async()=>{
   const {channel} = build();
   await channel.poll(sessions);
@@ -135,7 +163,7 @@ test('abandoned processing action reports uncertainty without replay',async()=>{
   assert.equal((await channel.complete(command.id,{ok:true})).ignored,true);
 });
 
-test('queue state relays through control storage and cancellation is limited to fresh queued entries',async()=>{
+test('queue state relays through control storage and cancellation is limited to safe pre-send entries',async()=>{
   const {channel}=build();
   const queued=[{id:'queued-1',thread_id:'thread-1',state:'QUEUED',attempts:0}];
   await channel.poll(sessions,queued);

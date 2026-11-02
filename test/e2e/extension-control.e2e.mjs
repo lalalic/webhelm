@@ -148,6 +148,7 @@ try {
   assert.equal(appCreated.name,'Custom');
   const maliciousPage=(await cdp('Target.createTarget',{url:`chrome-extension://${EXTENSION_ID}/helm.html`})).targetId;
   const maliciousSid=await attach(maliciousPage);
+  await waitFor(async()=>evaluate(maliciousSid,"typeof chrome !== 'undefined' && !!chrome.runtime"),'extension page ready');
   for (const method of ['workspace.acquireIdentity','workspace.acquire','workspace.releaseAll','workspace.resize']) {
     const denied=await evaluate(maliciousSid,`chrome.runtime.sendMessage({method:${JSON.stringify(method)},args:{name:'Custom',poolSize:16}})`);
     assert.equal(denied.ok,false,method+' cannot mutate application workspaces through an extension page');
@@ -196,6 +197,46 @@ try {
   assert.ok(displayed.groups.every(group=>/1 session$/.test(group.stats)));
   assert.ok(displayed.height<450,'popup remains compact with two active workspaces');
   console.log('COMPACT WORKSPACE UI',JSON.stringify({groups:displayed.groups,height:displayed.height}));
+  // Real isolated Chrome: title resolution and tab activation use the leased tab,
+  // not a generated session identifier. Do not touch signed-in Chrome tabs.
+  const titlePage='data:text/html,%3Ctitle%3EReview%20Target%20Tab%3C%2Ftitle%3E';
+  const navigation=await request({op:'exec',session_id:main.session_id,
+    code:`console.log(await goto_url(${JSON.stringify(titlePage)}));`});
+  assert.equal(navigation.ok,true,JSON.stringify(navigation));
+  const tabTitle=await waitFor(async()=>evaluate(popupSid,
+    `[...document.querySelectorAll('.tab-title')].some(button=>button.textContent==='Review Target Tab')`),
+    'popup real tab title');
+  assert.equal(tabTitle,true);
+  await evaluate(popupSid,`[...document.querySelectorAll('.tab-title')].find(button=>button.textContent==='Review Target Tab').click()`);
+  const activated=await waitFor(async()=>{
+    const tabs=await evaluate(workerSid,"chrome.tabs.query({active:true})");
+    return tabs.some(tab=>tab.title==='Review Target Tab');
+  },'Session tab activation');
+  assert.equal(activated,true);
+  console.log('SESSION TITLE ACTIVATION PASS');
+
+  const receipt=await request({op:'chatgpt-new-turn-enqueue',config:{
+    thread_id:'webhelm-e2e-title-test',message:'Review this draft\nprivate next line',idempotency_key:'webhelm-e2e-title-entry',mergeable:true,
+  }});
+  assert.equal(receipt.ok,true);
+  const queueDisplayed=await waitFor(async()=>evaluate(popupSid,
+    `({title:document.querySelector('.queue-title')?.textContent, remove:document.querySelector('.queue-row button:last-child')?.textContent})`)
+    .then(row=>row.title==='Review this draft' && row.remove==='Remove'?row:null), 'queue title and remove');
+  assert.equal(queueDisplayed.title,'Review this draft');
+  await evaluate(popupSid,`document.querySelector('.queue-title').click()`);
+  const opened=await waitFor(async()=>{
+    const tabs=await evaluate(workerSid,'chrome.tabs.query({})');
+    return tabs.some(tab=>tab.url?.startsWith('https://chatgpt.com/c/webhelm-e2e-title-test'));
+  },'queue title opens thread');
+  assert.equal(opened,true);
+  await evaluate(popupSid,`document.querySelector('.queue-row button:last-child').click()`);
+  await waitFor(async()=>{
+    const queue=await request({op:'queue-list'});
+    return !queue.items.some(item=>item.id===receipt.queue_id);
+  },'queue item removal');
+  console.log('QUEUE SHORT TITLE / NAVIGATE / REMOVE PASS');
+  await waitFor(async()=>evaluate(popupSid,"[...document.querySelectorAll('.workspace-title button')].every(button=>!button.disabled)"),'popup operations ready');
+
   await evaluate(popupSid,`[...document.querySelectorAll('.workspace-title button')].find(button=>button.parentElement.innerText.includes('Custom')).click()`);
   const chosen=await evaluate(popupSid,`document.querySelector('#confirm-text').textContent`);
   assert.match(chosen,/Custom/);

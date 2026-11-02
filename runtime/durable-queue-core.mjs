@@ -42,7 +42,16 @@ export class DurableQueueCore {
   cancel(id) {
     return this._transaction(() => this.policy.cancel(this.db, id));
   }
-  list() { return this.policy.list(this.db); }
+  list() {
+    const result = this.policy.list(this.db);
+    if (typeof this.policy.describe !== 'function') return result;
+    const rows = new Map(this.rows().map(row => [row.id, row]));
+    return {...result, items: result.items.map(item => {
+      const row = rows.get(item.id);
+      const description = row && this.policy.describe(row);
+      return description ? {...item, title: description.title, url: description.url} : item;
+    })};
+  }
   start() {
     if (this.started) return this;
     this.started = true;

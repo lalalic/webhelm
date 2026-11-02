@@ -615,6 +615,7 @@ let controlPollActive = false;
 function visibleSessions() {
   return [...sessions.values()].map(s => ({
     session_id:s.session_id,workspace:s.workspace,last_used_at:s.last_used_at,
+    tabId:s.leasedTabs.get(s.targetId) ?? s.leasedTabs.get(s.rootTargetId) ?? null,
   }));
 }
 async function pollExtensionControl() {

@@ -23,9 +23,10 @@ function showConfirmation(action, params = {}) {
   }
 }
 
-function actionButton(label, disabled, onClick) {
+function actionButton(label, disabled, onClick, className = '') {
   const button = document.createElement('button');
   button.textContent = label;
+  if (className) button.className = className;
   button.disabled = disabled;
   button.addEventListener('click', onClick);
   return button;
@@ -33,7 +34,7 @@ function actionButton(label, disabled, onClick) {
 
 function renderWorkspaces(workspaces, busy, connected) {
   const signature = JSON.stringify(workspaces.map(w => [
-    w.name,w.initialized,w.available,w.poolSize,w.idleTabs,w.leasedTabs,w.sessions.map(s => s.session_id),
+    w.name,w.initialized,w.available,w.poolSize,w.idleTabs,w.leasedTabs,w.sessions.map(s => [s.session_id,s.tab_title,s.tabId]),
   ])) + ':' + busy + ':' + connected;
   if (signature === lastSignature) return;
   lastSignature = signature;
@@ -63,9 +64,12 @@ function renderWorkspaces(workspaces, busy, connected) {
       sessionRow.className = 'session-row';
       const details = document.createElement('div');
       details.className = 'session-info';
-      const identifier = document.createElement('span');
-      identifier.textContent = `Session ${session.session_id.slice(0, 12)}…`;
-      details.append(identifier);
+      const title = actionButton(session.tab_title || 'Untitled tab', busy || !connected || !session.tabId, async () => {
+        try { await rpc('workspace.control.activateTab', {sessionId:session.session_id}); }
+        catch(error) { el('message').textContent=error.message; }
+      }, 'tab-title');
+      title.title = session.tab_title || 'Untitled tab';
+      details.append(title);
       sessionRow.append(details, actionButton('Stop', busy || !connected,
         () => showConfirmation('stop', {sessionId:session.session_id})));
       row.append(sessionRow);
@@ -77,18 +81,25 @@ function renderWorkspaces(workspaces, busy, connected) {
 function renderQueue(items, busy, connected) {
   const target=el('queue-list');
   target.replaceChildren();
-  if (!items.length) { target.textContent='No active turns'; return; }
+  if (!items.length) { target.textContent='No queue entries'; return; }
   for (const item of items) {
     const row=document.createElement('div'); row.className='queue-row';
     const info=document.createElement('div'); info.className='queue-info';
-    const title=document.createElement('strong'); title.textContent=`Thread ${item.thread_id}`;
+    const title=actionButton(item.title || 'ChatGPT message', !connected || !item.url, async()=>{
+      try { await rpc('workspace.control.openQueue',{queueId:item.id}); }
+      catch(error) { el('message').textContent=error.message; }
+    }, 'queue-title');
+    title.title=item.title || 'ChatGPT message';
     const detail=document.createElement('span'); detail.textContent=`${item.state.toLowerCase()} · ${item.attempts} attempt${item.attempts===1?'':'s'}`;
     info.append(title,detail); row.append(info);
-    if (item.state==='QUEUED') row.append(actionButton('Cancel',busy || !connected,async()=>{
+    const safe=['QUEUED','WAITING','BLOCKED'].includes(item.state);
+    const remove=actionButton('Remove',!safe || busy || !connected,async()=>{
       try { const result=await rpc('workspace.control.queueCancel',{queueId:item.id}); if(!result.id) throw new Error('Missing queue request ID'); el('message').textContent='Waiting for WebHelm daemon…'; }
       catch(error) { el('message').textContent=error.message; }
       refresh();
-    }));
+    });
+    if (!safe) remove.title='Cannot remove a running or unverified submission';
+    row.append(remove);
     target.append(row);
   }
 }
@@ -105,10 +116,10 @@ async function refresh() {
     renderQueue(state.queue || [], busy, state.connected);
     el('confirm').disabled = !state.connected || busy;
     if (busy) {
-      el('message').textContent = 'Stopping sessions…';
+      el('message').textContent = 'Applying WebHelm action…';
     } else if (state.lastResult) {
       el('message').textContent = state.lastResult.ok
-        ? `Last action: stopped ${state.lastResult.stoppedCount} session(s).`
+        ? (state.lastResult.queue_id ? 'Queue entry removed.' : `Last action: stopped ${state.lastResult.stoppedCount} session(s).`)
         : `Last action failed: ${state.lastResult.error}`;
     }
   } catch (error) {
