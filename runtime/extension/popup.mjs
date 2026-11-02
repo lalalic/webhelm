@@ -1,7 +1,6 @@
 const el = id => document.getElementById(id);
 let confirming = false;
-let requestId = null;
-let chosen = {action: 'stop-all'};
+let chosen = null;
 let lastSignature = '';
 let refreshRunning = false;
 
@@ -15,13 +14,12 @@ function showConfirmation(action, params = {}) {
   chosen = {action, ...params};
   confirming = true;
   el('confirmation').hidden = false;
-  el('clear').hidden = true;
-  if (action === 'stop-all') {
-    el('confirm-text').textContent = 'Stop sessions in ALL workspaces? Active tasks will be interrupted; queued jobs may create new sessions.';
-  } else if (action === 'stop-workspace') {
+  if (action === 'stop-workspace') {
     el('confirm-text').textContent = `Stop all sessions in "${params.workspace}"? Other workspaces are unaffected.`;
-  } else {
+  } else if (action === 'stop') {
     el('confirm-text').textContent = `Stop session ${params.sessionId.slice(0,12)}…? Active work may be interrupted.`;
+  } else {
+    throw new Error('Unsupported stop action');
   }
 }
 
@@ -52,13 +50,13 @@ function renderWorkspaces(workspaces, busy, connected) {
     header.className = 'workspace-title';
     const heading = document.createElement('strong');
     heading.textContent = workspace.name;
-    header.append(heading, actionButton('Clear group', busy || !connected || !workspace.sessions.length,
+    header.append(heading, actionButton('Clear sessions', busy || !connected || !workspace.sessions.length,
       () => showConfirmation('stop-workspace', {workspace:workspace.name})));
     const info = document.createElement('div');
     info.className = 'workspace-details';
     info.textContent = workspace.initialized
-      ? `${workspace.available} available / ${workspace.poolSize} slots · ${workspace.idleTabs} idle tabs · ${workspace.leasedTabs} leased · ${workspace.sessions.length} sessions`
-      : `Unavailable · ${workspace.sessions.length} sessions · ${workspace.reason || 'workspace missing'}`;
+      ? `${workspace.available}/${workspace.poolSize} available · ${workspace.idleTabs} idle · ${workspace.sessions.length} session${workspace.sessions.length === 1 ? "" : "s"}`
+      : `Unavailable · ${workspace.sessions.length} session${workspace.sessions.length === 1 ? "" : "s"}`;
     row.append(header, info);
     for (const session of workspace.sessions) {
       const sessionRow = document.createElement('div');
@@ -81,12 +79,10 @@ async function refresh() {
   refreshRunning = true;
   try {
     const state = await rpc('workspace.control.status');
-    el('available').textContent = state.connected ? state.totalAvailable ?? '—' : '—';
-    el('sessions').textContent = state.connected ? state.totalSessions : '—';
-    el('daemon').textContent = state.connected ? 'Online' : 'Offline';
+    el('daemon-status').textContent = state.connected ? 'Online' : 'Offline';
+    el('daemon-status').className = `daemon-state ${state.connected ? 'online' : 'offline'}`;
     const busy = Boolean(state.request);
     renderWorkspaces(state.workspaces || [], busy, state.connected);
-    el('clear').disabled = !state.connected || !state.sessionCount || busy;
     el('confirm').disabled = !state.connected || busy;
     if (busy) {
       el('message').textContent = 'Stopping sessions…';
@@ -94,25 +90,20 @@ async function refresh() {
       el('message').textContent = state.lastResult.ok
         ? `Last action: stopped ${state.lastResult.stoppedCount} session(s).`
         : `Last action failed: ${state.lastResult.error}`;
-      requestId = null;
     }
   } catch (error) {
-    el('clear').disabled = true;
     el('confirm').disabled = true;
-    el('daemon').textContent = 'Offline';
-    el('available').textContent = '—';
-    el('sessions').textContent = '—';
+    el('daemon-status').textContent = 'Offline';
+    el('daemon-status').className = 'daemon-state offline';
     el('message').textContent = error.message;
   } finally {
     refreshRunning = false;
   }
 }
 
-el('clear').addEventListener('click', () => showConfirmation('stop-all'));
 el('cancel').addEventListener('click', () => {
   confirming = false;
   el('confirmation').hidden = true;
-  el('clear').hidden = false;
   refresh();
 });
 el('confirm').addEventListener('click', async () => {
@@ -120,15 +111,14 @@ el('confirm').addEventListener('click', async () => {
   el('confirm').disabled = true;
   try {
     const result = await rpc('workspace.control.requestStop', chosen);
-    requestId = result.id;
+    if (!result.id) throw new Error('Missing WebHelm stop request ID');
     el('message').textContent = 'Waiting for WebHelm daemon…';
   } catch (error) {
     el('message').textContent = error.message;
   } finally {
     confirming = false;
     el('confirmation').hidden = true;
-    el('clear').hidden = false;
-    refresh();
+      refresh();
   }
 });
 

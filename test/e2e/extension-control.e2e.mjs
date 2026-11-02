@@ -92,6 +92,7 @@ try {
   const worker=await waitFor(async()=>(await cdp('Target.getTargets')).targetInfos.find(
     target=>target.type==='service_worker' && target.url.includes(EXTENSION_ID)), 'Extension worker');
   let workerSid=await attach(worker.targetId);
+  await waitFor(()=>rpc(workerSid,'workspace.list'),'extension worker ready');
   const pinned=await evaluate(workerSid,"chrome.tabs.create({url:'about:blank',pinned:true,active:false})");
   assert.equal(pinned.pinned,true);
   await waitFor(()=>rpc(workerSid,'workspace.ensure',{name:'Harness',poolSize:4}),'legacy Harness created');
@@ -141,13 +142,32 @@ try {
   const popupTarget=(await cdp('Target.createTarget',{url:`chrome-extension://${EXTENSION_ID}/popup.html`})).targetId;
   const popupSid=await attach(popupTarget);
   const displayed=await waitFor(async()=>{
-    const v=await evaluate(popupSid,`({text:document.body.innerText,sessions:document.querySelector('#sessions').textContent,available:document.querySelector('#available').textContent})`);
-    return v?.text.includes('Custom') && v.text.includes('WebHelm') && v.sessions==='2'?v:null;
+    const v=await evaluate(popupSid,`({
+      text:document.body.innerText,
+      daemon:document.querySelector('#daemon-status')?.textContent,
+      groups:[...document.querySelectorAll('.workspace-row')].map(row=>({
+        label:row.querySelector('.workspace-title strong')?.textContent,
+        stats:row.querySelector('.workspace-details')?.textContent,
+        action:row.querySelector('.workspace-title button')?.textContent,
+      })),
+      hasGlobalStop:!!document.querySelector('#clear'),
+      hasTotals:!!document.querySelector('.stats'),
+      height:document.body.scrollHeight,
+    })`);
+    return v?.daemon==='Online' && v.groups.length===2?v:null;
   },'two-group popup');
-  console.log('TWO WORKSPACE UI',JSON.stringify({sessions:displayed.sessions,available:displayed.available}));
+  assert.equal(displayed.hasGlobalStop,false);
+  assert.equal(displayed.hasTotals,false);
+  assert.ok(displayed.groups.every(group=>group.action==='Clear sessions'));
+  assert.ok(displayed.groups.every(group=>/1 session$/.test(group.stats)));
+  assert.ok(displayed.height<450,'popup remains compact with two active workspaces');
+  console.log('COMPACT WORKSPACE UI',JSON.stringify({groups:displayed.groups,height:displayed.height}));
   await evaluate(popupSid,`[...document.querySelectorAll('.workspace-title button')].find(button=>button.parentElement.innerText.includes('Custom')).click()`);
   const chosen=await evaluate(popupSid,`document.querySelector('#confirm-text').textContent`);
   assert.match(chosen,/Custom/);
+  await evaluate(popupSid,`document.querySelector('#cancel').click()`);
+  assert.equal((await request({op:'list'})).sessions.length,2,'cancel does not stop sessions');
+  await evaluate(popupSid,`[...document.querySelectorAll('.workspace-title button')].find(button=>button.parentElement.innerText.includes('Custom')).click()`);
   await evaluate(popupSid,`document.querySelector('#confirm').click()`);
   const after=await waitFor(async()=>(await request({op:'list'})).sessions, 'group stop').then(async()=>
     waitFor(async()=>{const r=await request({op:'list'});return r.sessions.length===1?r:null;},'Custom stop'));
@@ -167,6 +187,8 @@ try {
   const stopMain=await request({op:'stop',session_id:main.session_id});
   assert.equal(stopMain.returned_to_idle,true);
   assert.equal(await waitFor(async()=>await badgeText()==='0'?'0':null,'badge final zero'),'0');
+  const buttonsDisabled=await waitFor(async()=>await evaluate(popupSid,`[...document.querySelectorAll('.workspace-title button')].length>0 && [...document.querySelectorAll('.workspace-title button')].every(button=>button.disabled)`)?true:null,'disabled clear-session buttons at zero');
+  assert.equal(buttonsDisabled,true);
   console.log('BADGE PASS: 1 → 0 → 2 → 1 → 0 across real daemon sessions');
   console.log('E2E PASS');
 } finally {
