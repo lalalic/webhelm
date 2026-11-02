@@ -78,7 +78,14 @@
       "runtime/platforms",
       "skills/webhelm/platforms"
     ],
-    "requiresAuthorization": false
+    "requiresAuthorization": false,
+    "alternativeRoutes": [
+      "platform"
+    ],
+    "requiredAny": [
+      "repair",
+      "fix"
+    ]
   },
   {
     "id": "first-install",

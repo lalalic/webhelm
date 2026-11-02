@@ -21,5 +21,10 @@ test('skill behavior matrix covers choices, failure, extension and approval',()=
       assert.equal(new Set(c[field]).size,c[field].length);
     }
     assert.equal(typeof c.requiresAuthorization,'boolean');
+    if(c.alternativeRoutes){
+      assert.ok(Array.isArray(c.alternativeRoutes));
+      assert.ok(c.alternativeRoutes.every(route=>schema.properties.route.enum.includes(route)));
+    }
+    if(c.requiredAny) assert.ok(Array.isArray(c.requiredAny) && c.requiredAny.length>0);
   }
 });

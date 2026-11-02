@@ -34,3 +34,8 @@ another Codex model. No Promptfoo adapter is assumed or installed. The runner
 accepts raw structured JSON or Markdown-fenced JSON, and reports upstream
 provider failures as BLOCKED rather than skill failures. Required schema fields
 and unexpected extras are checked deterministically. No paid model fallback.
+
+Only executable commands (not read-only `--help` references) are checked for
+forbidden execution. A repair task may use either `extend` or `platform`
+routing when the plan explicitly reads the canonical guide and repairs the
+Action; this avoids equating a route-label difference with incorrect behavior.
