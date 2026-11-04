@@ -103,8 +103,12 @@ try {
   await waitFor(()=>rpc(workerSid,'workspace.list'),'extension worker ready');
   const pinned=await evaluate(workerSid,"chrome.tabs.create({url:'about:blank',pinned:true,active:false})");
   assert.equal(pinned.pinned,true);
-  await waitFor(()=>rpc(workerSid,'workspace.ensure',{name:'Harness',poolSize:4}),'legacy Harness created');
+  const legacy=await waitFor(()=>rpc(workerSid,'workspace.ensure',{name:'Harness',poolSize:4}),'legacy Harness created');
   console.log('Legacy Harness group created');
+  const ordinary=await evaluate(workerSid,"chrome.tabs.create({url:'about:blank',active:false})");
+  const beforeMigration=await evaluate(workerSid,`chrome.tabs.query({windowId:${pinned.windowId}}).then(tabs=>tabs.map(({id,index,groupId})=>({id,index,groupId})).sort((a,b)=>a.index-b.index))`);
+  const legacyIndex=beforeMigration.find(tab=>tab.groupId===legacy.groupId)?.index;
+  assert.ok(Number.isInteger(legacyIndex),'legacy group exists in the original tab strip');
   await cdp('Target.detachFromTarget',{sessionId:workerSid});
 
   fs.mkdirSync(env.WEBHELM_RUNTIME_DIR,{recursive:true});
@@ -146,9 +150,14 @@ try {
   const webhelmId=groups.workspaces.find(w=>w.name==='WebHelm').groupId;
   const order=await evaluate(workerSid,`chrome.tabs.query({}).then(tabs=>tabs.filter(tab=>tab.windowId===${pinned.windowId}).map(({id,index,pinned,groupId})=>({id,index,pinned,groupId})).sort((a,b)=>a.index-b.index))`);
   assert.equal(order[0].id,pinned.id,'pinned tab remains leftmost');
-  assert.equal(order[1].groupId,webhelmId,'WebHelm group starts immediately after pinned tabs');
-  assert.equal(order[1].index,1,'WebHelm is first unpinned group after legacy migration');
-  console.log('GROUP FIRST PASS: pinned tab precedes WebHelm group',JSON.stringify(order.slice(0,4)));
+  assert.equal(order.find(tab=>tab.groupId===webhelmId)?.index,legacyIndex,
+    'legacy migration preserves the actual Chrome tab group position');
+  const ordinaryBefore=beforeMigration.find(tab=>tab.id===ordinary.id)?.index;
+  const ordinaryAfter=order.find(tab=>tab.id===ordinary.id)?.index;
+  assert.ok(Number.isInteger(ordinaryAfter),'unowned ordinary tab is not removed');
+  assert.equal(Math.sign(ordinaryAfter-order.find(tab=>tab.groupId===webhelmId).index),
+    Math.sign(ordinaryBefore-legacyIndex),'migration preserves ordinary tab relative to the group');
+  console.log('GROUP MIGRATION ORDER PASS:',JSON.stringify(order.slice(0,4)));
   const preservedTargetId=first.target_id;
   const stopped=await request({op:'stop',session_id:first.session_id});
   assert.equal(stopped.returned_to_idle,true);
@@ -177,6 +186,10 @@ try {
   await cdp('Target.closeTarget',{targetId:untrustedPage});
   const appCreated=await request({op:'workspace-create',name:'Custom',pool_size:8});
   assert.equal(appCreated.name,'Custom');
+  const afterCreate=await evaluate(workerSid,`chrome.tabs.query({windowId:${pinned.windowId}}).then(tabs=>tabs.map(({id,index,groupId})=>({id,index,groupId})).sort((a,b)=>a.index-b.index))`);
+  assert.equal(afterCreate.at(-1).groupId,appCreated.groupId,'new custom group is rightmost');
+  assert.ok(afterCreate.find(tab=>tab.id===ordinary.id).index < afterCreate.at(-1).index);
+  console.log('NEW GROUP RIGHTMOST PASS:',JSON.stringify(afterCreate.slice(-4)));
   const maliciousPage=(await cdp('Target.createTarget',{url:`chrome-extension://${EXTENSION_ID}/helm.html`})).targetId;
   const maliciousSid=await attach(maliciousPage);
   await waitFor(async()=>evaluate(maliciousSid,"typeof chrome !== 'undefined' && !!chrome.runtime"),'extension page ready');

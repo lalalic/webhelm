@@ -9,6 +9,7 @@ function fakeChrome() {
   const tabs = new Map();
   const groups = new Map();
   const storage = {};
+  let nextCreateIndex = null;
 
   const clone = (value) =>
     value === undefined ? undefined : JSON.parse(JSON.stringify(value));
@@ -48,12 +49,19 @@ function fakeChrome() {
         return clone(tab);
       },
       async create(options) {
+        const windowId = Number.isInteger(options.windowId) ? options.windowId : 1;
+        const windowTabs = [...tabs.values()].filter(t => t.windowId === windowId);
+        const index = nextCreateIndex === null ? windowTabs.length : nextCreateIndex;
+        nextCreateIndex = null;
+        if (index < windowTabs.filter(t => t.pinned).length || index > windowTabs.length)
+          throw Error("Invalid tab insertion index");
+        for (const existing of windowTabs) if (existing.index >= index) existing.index++;
         const tab = {
           id: nextTabId++,
           groupId: -1,
-          windowId: Number.isInteger(options.windowId) ? options.windowId : 1,
+          windowId,
           pinned: Boolean(options.pinned),
-          index: [...tabs.values()].filter(t => t.windowId === (options.windowId ?? 1)).length,
+          index,
           title: "Browser Workspace",
           url: options.url || "about:blank",
           active: Boolean(options.active),
@@ -61,6 +69,9 @@ function fakeChrome() {
         };
         tabs.set(tab.id, tab);
         return clone(tab);
+      },
+      __insertNextAt(index) {
+        nextCreateIndex = index;
       },
       async group(options) {
         const groupId = Number.isInteger(options.groupId)
@@ -108,8 +119,9 @@ function fakeChrome() {
         const inWindow = [...tabs.values()].filter(t => t.windowId === windowId).sort((a,b)=>a.index-b.index);
         const other = inWindow.filter(t => t.groupId !== groupId);
         const firstUnpinned = other.filter(t => t.pinned).length;
-        if (options.index < firstUnpinned) throw Error('Pinned tabs must precede groups');
-        other.splice(options.index,0,...grouped);
+        const index = options.index === -1 ? other.length : options.index;
+        if (index < firstUnpinned) throw Error('Pinned tabs must precede groups');
+        other.splice(index,0,...grouped);
         other.forEach((tab,index)=>{tab.index=index});
         return clone(groups.get(groupId));
       },
@@ -795,50 +807,59 @@ test('independent leased tab IDs return to identical idle URLs without losing ow
   assert.equal(state.idle,2);
 });
 
-test("new default WebHelm group moves immediately after pinned tabs", async () => {
+test("every new WebHelm or custom group is rightmost even when Chrome inserts its tab in the middle", async () => {
   const chrome = fakeChrome();
   const pinned = await chrome.tabs.create({url:"https://pinned.test",pinned:true});
   const other = await chrome.tabs.create({url:"https://other.test"});
   const custom = await chrome.tabs.create({url:"https://custom.test"});
   const manager = new WorkspaceManager(chrome);
+  chrome.tabs.__insertNextAt(2);
   const created = await manager.create("WebHelm",3);
   const [tab] = await chrome.tabs.query({groupId:created.groupId});
-  assert.equal(tab.index,1);
+  assert.equal(tab.index,3);
   assert.deepEqual((await chrome.tabs.query({windowId:1})).map(t=>t.id),
-    [pinned.id, tab.id, other.id, custom.id]);
+    [pinned.id, other.id, custom.id, tab.id]);
   assert.equal((await manager.status("WebHelm")).collapsed,true);
+
+  chrome.tabs.__insertNextAt(2);
+  const extra = await manager.create("Custom",2);
+  assert.deepEqual((await chrome.tabs.query({windowId:1})).map(t=>t.id),
+    [pinned.id, other.id, custom.id, tab.id, extra.tabIds[0]]);
 });
 
-test("routine Session acquisition does not undo user's manual group order; restore does", async () => {
+test("Session acquisition and restoration preserve the user's manually reordered groups", async () => {
   const chrome=fakeChrome(),manager=new WorkspaceManager(chrome);
   await chrome.tabs.create({url:"https://before.test"});
   const group=await manager.create("WebHelm",3);
   const groupTab=group.tabIds[0];
-  await chrome.tabGroups.move(group.groupId,{index:1});
-  assert.equal((await chrome.tabs.get(groupTab)).index,1);
+  await chrome.tabGroups.move(group.groupId,{index:0});
+  assert.equal((await chrome.tabs.get(groupTab)).index,0);
   await manager.ensureWorkspace("WebHelm");
   const lease=await manager.acquireIdentity("WebHelm");
   await manager.release("WebHelm",lease.tabId);
-  assert.equal((await chrome.tabs.get(groupTab)).index,1);
+  assert.equal((await chrome.tabs.get(groupTab)).index,0);
   await manager.restoreConfiguredWorkspaces();
   assert.equal((await chrome.tabs.get(groupTab)).index,0);
 });
 
-test("custom workspace creation and restoration never move the default WebHelm group", async () => {
+test("custom group creation goes rightmost while restore preserves group ordering", async () => {
   const chrome=fakeChrome(),manager=new WorkspaceManager(chrome);
   const a=await manager.create("WebHelm");
   const b=await manager.create("Custom");
   assert.equal((await chrome.tabs.get(a.tabIds[0])).index,0);
   assert.equal((await chrome.tabs.get(b.tabIds[0])).index,1);
+  await chrome.tabGroups.move(b.groupId,{index:0});
   await manager.restoreConfiguredWorkspaces();
-  assert.equal((await chrome.tabs.get(a.tabIds[0])).index,0);
+  assert.equal((await chrome.tabs.get(b.tabIds[0])).index,0);
+  assert.equal((await chrome.tabs.get(a.tabIds[0])).index,1);
 });
 
-test("legacy Harness migration positions the renamed default group at the front", async () => {
+test("legacy Harness migration preserves its manually selected group position", async () => {
   const chrome=fakeChrome(),manager=new WorkspaceManager(chrome);
   await chrome.tabs.create({url:"https://existing.test"});
   const harness=await manager.create("Harness");
   assert.equal((await chrome.tabs.get(harness.tabIds[0])).index,1);
+  await chrome.tabGroups.move(harness.groupId,{index:0});
   const migrated=await manager.migrateDefaultWorkspace();
   assert.equal(migrated.migrated,true);
   assert.equal((await chrome.tabs.get(harness.tabIds[0])).index,0);
