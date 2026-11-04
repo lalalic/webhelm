@@ -187,9 +187,10 @@ try {
   const appCreated=await request({op:'workspace-create',name:'Custom',pool_size:8});
   assert.equal(appCreated.name,'Custom');
   const afterCreate=await evaluate(workerSid,`chrome.tabs.query({windowId:${pinned.windowId}}).then(tabs=>tabs.map(({id,index,groupId})=>({id,index,groupId})).sort((a,b)=>a.index-b.index))`);
-  assert.equal(afterCreate.at(-1).groupId,appCreated.groupId,'new custom group is rightmost');
-  assert.ok(afterCreate.find(tab=>tab.id===ordinary.id).index < afterCreate.at(-1).index);
-  console.log('NEW GROUP RIGHTMOST PASS:',JSON.stringify(afterCreate.slice(-4)));
+  const leftmostUnpinned = afterCreate.find(tab => tab.id === pinned.id).index + 1;
+  assert.equal(afterCreate[leftmostUnpinned].groupId,appCreated.groupId,'new custom group is leftmost after pinned tabs');
+  assert.ok(afterCreate.find(tab=>tab.id===ordinary.id).index > leftmostUnpinned);
+  console.log('NEW GROUP LEFTMOST PASS:',JSON.stringify(afterCreate.slice(0,4)));
   const maliciousPage=(await cdp('Target.createTarget',{url:`chrome-extension://${EXTENSION_ID}/helm.html`})).targetId;
   const maliciousSid=await attach(maliciousPage);
   await waitFor(async()=>evaluate(maliciousSid,"typeof chrome !== 'undefined' && !!chrome.runtime"),'extension page ready');

@@ -807,7 +807,7 @@ test('independent leased tab IDs return to identical idle URLs without losing ow
   assert.equal(state.idle,2);
 });
 
-test("every new WebHelm or custom group is rightmost even when Chrome inserts its tab in the middle", async () => {
+test("every new WebHelm or custom group is leftmost after pinned tabs even when Chrome inserts its tab in the middle", async () => {
   const chrome = fakeChrome();
   const pinned = await chrome.tabs.create({url:"https://pinned.test",pinned:true});
   const other = await chrome.tabs.create({url:"https://other.test"});
@@ -816,15 +816,15 @@ test("every new WebHelm or custom group is rightmost even when Chrome inserts it
   chrome.tabs.__insertNextAt(2);
   const created = await manager.create("WebHelm",3);
   const [tab] = await chrome.tabs.query({groupId:created.groupId});
-  assert.equal(tab.index,3);
+  assert.equal(tab.index,1);
   assert.deepEqual((await chrome.tabs.query({windowId:1})).map(t=>t.id),
-    [pinned.id, other.id, custom.id, tab.id]);
+    [pinned.id, tab.id, other.id, custom.id]);
   assert.equal((await manager.status("WebHelm")).collapsed,true);
 
-  chrome.tabs.__insertNextAt(2);
+  chrome.tabs.__insertNextAt(3);
   const extra = await manager.create("Custom",2);
   assert.deepEqual((await chrome.tabs.query({windowId:1})).map(t=>t.id),
-    [pinned.id, other.id, custom.id, tab.id, extra.tabIds[0]]);
+    [pinned.id, extra.tabIds[0], tab.id, other.id, custom.id]);
 });
 
 test("Session acquisition and restoration preserve the user's manually reordered groups", async () => {
@@ -842,27 +842,27 @@ test("Session acquisition and restoration preserve the user's manually reordered
   assert.equal((await chrome.tabs.get(groupTab)).index,0);
 });
 
-test("custom group creation goes rightmost while restore preserves group ordering", async () => {
+test("custom group creation goes leftmost while restore preserves group ordering", async () => {
   const chrome=fakeChrome(),manager=new WorkspaceManager(chrome);
   const a=await manager.create("WebHelm");
   const b=await manager.create("Custom");
+  assert.equal((await chrome.tabs.get(a.tabIds[0])).index,1);
+  assert.equal((await chrome.tabs.get(b.tabIds[0])).index,0);
+  await chrome.tabGroups.move(a.groupId,{index:0});
+  await manager.restoreConfiguredWorkspaces();
   assert.equal((await chrome.tabs.get(a.tabIds[0])).index,0);
   assert.equal((await chrome.tabs.get(b.tabIds[0])).index,1);
-  await chrome.tabGroups.move(b.groupId,{index:0});
-  await manager.restoreConfiguredWorkspaces();
-  assert.equal((await chrome.tabs.get(b.tabIds[0])).index,0);
-  assert.equal((await chrome.tabs.get(a.tabIds[0])).index,1);
 });
 
 test("legacy Harness migration preserves its manually selected group position", async () => {
   const chrome=fakeChrome(),manager=new WorkspaceManager(chrome);
   await chrome.tabs.create({url:"https://existing.test"});
   const harness=await manager.create("Harness");
-  assert.equal((await chrome.tabs.get(harness.tabIds[0])).index,1);
-  await chrome.tabGroups.move(harness.groupId,{index:0});
+  assert.equal((await chrome.tabs.get(harness.tabIds[0])).index,0);
+  await chrome.tabGroups.move(harness.groupId,{index:1});
   const migrated=await manager.migrateDefaultWorkspace();
   assert.equal(migrated.migrated,true);
-  assert.equal((await chrome.tabs.get(harness.tabIds[0])).index,0);
+  assert.equal((await chrome.tabs.get(harness.tabIds[0])).index,1);
   assert.equal((await manager.status("WebHelm")).groupId,harness.groupId);
 });
 

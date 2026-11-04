@@ -242,10 +242,14 @@ export class WorkspaceManager {
     return await this.chrome.tabs.query({ groupId });
   }
 
-  // New groups belong at the right edge, regardless of Chrome's new-tab
-  // insertion policy. Never reorder existing groups on restore or lease.
-  async positionNewGroupRightmost(groupId) {
-    await this.chrome.tabGroups.move(groupId, { index: -1 });
+  // New groups belong immediately after pinned tabs, regardless of Chrome's
+  // insertion policy. Existing groups keep their order on restore and lease.
+  async positionNewGroupLeftmost(groupId) {
+    const groupTabs = await this.groupTabs(groupId);
+    if (!groupTabs.length) return;
+    const windowTabs = await this.chrome.tabs.query({ windowId: groupTabs[0].windowId });
+    const firstUnpinned = windowTabs.filter(tab => tab.pinned).length;
+    await this.chrome.tabGroups.move(groupId, { index: firstUnpinned });
   }
 
   tabUrl(tab) {
@@ -497,7 +501,7 @@ export class WorkspaceManager {
     for (const tab of created) this.markOwned(tab.id);
     const groupId = await this.chrome.tabs.group({ tabIds: created.map((tab) => tab.id) });
     await this.chrome.tabGroups.update(groupId, { title: name, collapsed: true });
-    await this.positionNewGroupRightmost(groupId);
+    await this.positionNewGroupLeftmost(groupId);
     for (const tab of created) await this.waitForIdleTab(tab.id, name);
     return await this.status(name);
   }
