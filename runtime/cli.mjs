@@ -58,7 +58,8 @@ async function runPlatform(args) {
   if (sid && auto) throw Error('--session-id and --auto-session are mutually exclusive');
   if (platform === 'chatgpt' && action === 'new-turn' && mode === 'async') {
     if (sid || auto) throw Error('async new-turn cannot use browser session options');
-    if (!config.thread_id || !config.message) throw Error('thread_id and message required');
+    if (!config.thread_id || (!config.message && !config.file?.length)) throw Error('thread_id and message or file required');
+    if (config.file !== undefined && (!Array.isArray(config.file) || config.file.length > 4 || config.file.some(f => typeof f !== 'string' || !path.isAbsolute(f) || !fs.existsSync(f)))) throw Error('file must contain at most 4 existing absolute paths');
     if (typeof config.mergeable !== 'undefined' && typeof config.mergeable !== 'boolean') throw Error('mergeable must be a boolean');
     const receipt = await request({op:'chatgpt-new-turn-enqueue', config: {...config, idempotency_key: config.idempotency_key || randomUUID(), mode}});
     if (!receipt.ok || !receipt.queue_id || receipt.thread_id !== String(config.thread_id)) throw Error('ChatGPT queue returned an invalid acceptance receipt');

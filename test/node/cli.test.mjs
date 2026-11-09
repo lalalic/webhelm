@@ -34,7 +34,7 @@ test('platform profile and JS source preserve CLI compatibility',()=>{
 
 test('invalid queue action fails without sending a browser request',()=>{
   const result=run('platform','run','chatgpt','new-turn');
-  assert.equal(result.status,1);assert.match(result.stderr,/thread_id and message required/);
+  assert.equal(result.status,1);assert.match(result.stderr,/thread_id and message or file required/);
 });
 
 test('setup/sync/publish commands are visible',()=>{
