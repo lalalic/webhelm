@@ -1,9 +1,11 @@
 import { DatabaseSync } from "node:sqlite";
-import { mkdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { mkdirSync, existsSync, statSync } from "node:fs";
+import { join, resolve, isAbsolute } from "node:path";
+import { attachmentUploadScript } from "./attachment-upload.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import { classifyProbe, PROBE_JS, targetUrl } from "./chatgpt-probe.mjs";
-import { CLICK_SEND_JS, SEND_ENABLED_JS } from "./lifecycle-common.mjs";
+import { SEND_ENABLED_JS } from "./lifecycle-common.mjs";
+import { submissionScript } from "./submission-script.mjs";
 import { DurableQueueCore } from "../durable-queue-core.mjs";
 
 const transitions = new Set([
@@ -23,19 +25,26 @@ const chatgptQueuePolicy = {
   one(db, sql, ...args) { return db.prepare(sql).get(...args) || null; },
   rows(db) { return db.prepare("SELECT * FROM turns ORDER BY seq").all(); },
   enqueue(db, request = {}, now) {
-    const {thread_id, message, idempotency_key, idempotencyKey, project_id=null, mergeable=false} = request;
+    const {thread_id, message, idempotency_key, idempotencyKey, project_id=null, mergeable=false, file=[]} = request;
+    if (!Array.isArray(file) || file.length > 4 ||
+        file.some(p => typeof p !== "string" || !isAbsolute(p) ||
+          !existsSync(p) || !statSync(p).isFile())) {
+      throw new TypeError("file must contain at most 4 existing absolute file paths");
+    }
+    if (file.length && mergeable) throw new TypeError("attachment turns cannot merge");
+    const filesJson = JSON.stringify(file);
     const key=idempotency_key ?? idempotencyKey;
-    if (!thread_id || !message || !key) throw new TypeError("thread_id, message, idempotency_key required");
+    if (!thread_id || (!message && !file.length) || !key) throw new TypeError("thread_id, message, idempotency_key required");
     if (typeof mergeable !== "boolean") throw new TypeError("mergeable must be a boolean");
     const merged=this.one(db, "SELECT * FROM merged_requests WHERE idem_key=?", key);
     if (merged) {
-      if (merged.thread_id!==thread_id || merged.message!==message || merged.project_id!==project_id) throw new Error("idempotency key reused with different payload");
+      if (merged.thread_id!==thread_id || merged.message!==message || merged.project_id!==project_id || filesJson!=="[]") throw new Error("idempotency key reused with different payload");
       const row=this.one(db, "SELECT * FROM turns WHERE id=?", merged.queue_id);
       return {ok:true,status:"queued",queue_id:row.id,thread_id:row.thread_id,state:row.state};
     }
     const same=this.one(db, "SELECT * FROM turns WHERE idem_key=?", key);
     if (same) {
-      if (same.thread_id!==thread_id || same.message!==message || same.project_id!==project_id) throw new Error("idempotency key reused with different payload");
+      if (same.thread_id!==thread_id || same.message!==message || same.project_id!==project_id || (same.files_json||"[]")!==filesJson) throw new Error("idempotency key reused with different payload");
       return {ok:true,status:"queued",queue_id:same.id,thread_id:same.thread_id,state:same.state};
     }
     const tail=mergeable ? this.one(db, "SELECT * FROM turns WHERE thread_id=? ORDER BY seq DESC LIMIT 1", thread_id) : null;
@@ -49,7 +58,7 @@ const chatgptQueuePolicy = {
       return {ok:true,status:"queued",queue_id:row.id,thread_id:row.thread_id,state:row.state};
     }
     const id=randomUUID();
-    db.prepare("INSERT INTO turns(id,idem_key,project_id,thread_id,message,state,next_check_at,created_at,mergeable) VALUES(?,?,?,?,?,'QUEUED',?,?,?)").run(id,key,project_id,thread_id,message,now,now,mergeable?1:0);
+    db.prepare("INSERT INTO turns(id,idem_key,project_id,thread_id,message,state,next_check_at,created_at,mergeable,files_json) VALUES(?,?,?,?,?,'QUEUED',?,?,?,?)").run(id,key,project_id,thread_id,message,now,now,mergeable?1:0,filesJson);
     return {ok:true,status:"queued",queue_id:id,thread_id,state:"QUEUED"};
   },
   claim(db, owner, now, leaseSeconds) {
@@ -115,6 +124,9 @@ export class ChatGPTQueue extends DurableQueueCore {
     db.exec(
       `CREATE TABLE IF NOT EXISTS turns(seq INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT NOT NULL UNIQUE,idem_key TEXT NOT NULL UNIQUE,project_id TEXT,thread_id TEXT NOT NULL,message TEXT NOT NULL,state TEXT NOT NULL,lease_owner TEXT,lease_until REAL,next_check_at REAL NOT NULL,created_at REAL NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,receipt TEXT,mergeable INTEGER NOT NULL DEFAULT 0); CREATE INDEX IF NOT EXISTS turns_thread_order ON turns(thread_id,seq); CREATE TABLE IF NOT EXISTS merged_requests(idem_key TEXT PRIMARY KEY,project_id TEXT,thread_id TEXT NOT NULL,message TEXT NOT NULL,queue_id TEXT NOT NULL);`,
     );
+    if (!db.prepare("PRAGMA table_info(turns)").all().some(row => row.name === "files_json")) {
+      db.exec("ALTER TABLE turns ADD COLUMN files_json TEXT NOT NULL DEFAULT '[]'");
+    }
     super(db, chatgptQueuePolicy, now, {
       concurrency: Math.min(4, Math.max(1, Number(concurrency) || 4)), intervalMs,
     });
@@ -211,7 +223,7 @@ export class ChatGPTQueue extends DurableQueueCore {
     let state = "NOT_READY";
     while (Date.now() < deadline) {
       const source =
-        `await (async()=>{ const page=await page_info(); const state=await js(${
+        `return await (async()=>{ const page=await page_info(); const state=await js(${
           JSON.stringify(PROBE_JS)
         }); if(state?.state==='READY' && !(await js(${
           JSON.stringify(SEND_ENABLED_JS)
@@ -226,20 +238,12 @@ export class ChatGPTQueue extends DurableQueueCore {
   async _send(item) {
     const sid = this.sessions.get(item.id);
     if (!sid) throw new Error("missing prepared browser session");
-    const expected =
-      targetUrl(item.project_id, item.thread_id, item.message).split("?")[0];
-    const source = `await (async()=>{ const gate=await js(${
-      JSON.stringify(PROBE_JS)
-    }); const gateUrl=(await page_info()).url||''; let receipt={diagnostic:'pre_send_gate_not_ready'}; if(gate?.state==='READY' && await js(${
-      JSON.stringify(SEND_ENABLED_JS)
-    }) && Boolean((gate.composer_text||'').trim()) && gateUrl===${
-      JSON.stringify(expected)
-    } && await js(${
-      JSON.stringify(CLICK_SEND_JS)
-    })){ const until=Date.now()+30000; let disabled=false; while(Date.now()<until){ disabled=!(await js(${
-      JSON.stringify(SEND_ENABLED_JS)
-    })); if(disabled) break; await new Promise(resolve=>setTimeout(resolve,200)); } receipt=disabled?{verified_by:'send-button-disabled'}:{diagnostic:'post_submit_send_state_unverified'}; } return receipt; })()`;
-    return this._exec(sid, source);
+    const attachments = JSON.parse(item.files_json || "[]");
+    if (attachments.length) {
+      const upload = await this._exec(sid, attachmentUploadScript(attachments));
+      if (!upload?.ready) throw new Error("ChatGPT attachments not ready for Send");
+    }
+    return this._exec(sid, submissionScript(item));
   }
   async _finish(id) {
     const sid = this.sessions.get(id);
@@ -293,7 +297,7 @@ export class ChatGPTQueue extends DurableQueueCore {
       }
       this.transition(item.id, owner, "CHECKING", "SENDING");
       const receipt = await this._send(item);
-      if (receipt?.verified_by !== "send-button-disabled") {
+      if (!["send-button-disabled", "user-turn"].includes(receipt?.verified_by)) {
         this.transition(item.id, owner, "SENDING", "UNCERTAIN", {
           receipt: receipt?.diagnostic || "missing_user_turn_receipt",
         });

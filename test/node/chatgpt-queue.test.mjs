@@ -354,3 +354,82 @@ test("uncertain send receipt blocks successors and never retries the submitted i
   assert.equal(q.rows()[1].state, "QUEUED");
   assert.equal(executions, 2);
 });
+
+test("attachment turns persist paths across queue restart and cannot merge or change identity", async t => {
+  const { writeFileSync } = await import("node:fs");
+  const { q, root } = fixture();
+  t.after(async () => { await q.shutdown(); rmSync(root, { recursive:true, force:true }); });
+  const photo = join(root, "source.png");
+  writeFileSync(photo, Buffer.from([0, 255, 14, 18]));
+  const payload = { thread_id: "attached-thread", message: "see image",
+    idempotency_key: "attachment-request-123", file: [photo] };
+  const result = q.enqueue(payload);
+  const row = q.rows()[0];
+  assert.deepEqual(JSON.parse(row.files_json), [photo]);
+  assert.equal(q.enqueue(payload).queue_id, result.queue_id);
+  assert.throws(() => q.enqueue({...payload, file: []}), /idempotency key reused/);
+  assert.throws(() => q.enqueue({...payload, mergeable:true}), /cannot merge/);
+  const reopened = new ChatGPTQueue({persistenceRoot:root,startSession:async()=>({session_id:"test"}),
+    execSession:async()=>({}),stopSession:async()=>{}});
+  t.after(async()=>reopened.shutdown());
+  assert.deepEqual(JSON.parse(reopened.rows()[0].files_json), [photo]);
+});
+
+test("attachment worker uploads binary files before clicking Send", async t => {
+  const { writeFileSync } = await import("node:fs");
+  const { q, root } = fixture();
+  t.after(async () => { await q.shutdown(); rmSync(root, { recursive:true, force:true }); });
+  const doc = join(root, "my image.png");
+  writeFileSync(doc, Buffer.from([1, 2, 3]));
+  const calls = [];
+  q.sessions.set("item-one", "owned-session");
+  q._exec = async (_sid, source) => {
+    calls.push(source);
+    return calls.length === 1 ? {ready:true} : {verified_by:"send-button-disabled"};
+  };
+  await q._send({id:"item-one", thread_id:"thread123456", project_id:null,
+    message:"Review this", files_json:JSON.stringify([doc])});
+  assert.equal(calls.length, 2);
+  assert.match(calls[0], /upload_file/);
+  assert.ok(calls[0].includes(doc));
+  assert.ok(calls[1].includes("button[data-testid"));
+});
+
+test("ordinary new-turn URL redirects to Project thread without blocking queue", async () => {
+  const { targetUrl, classifyProbe } = await import("../../runtime/chatgpt/chatgpt-probe.mjs");
+  const url = targetUrl("g-p-12345678", "aabbccdd-1122-3344-5566-77889900aabb", "hello");
+  assert.ok(url.startsWith("https://chatgpt.com/c/"));
+  const state = { state:"READY", composer_text:"hello" };
+  const redirected = "https://chatgpt.com/g/g-p-12345678-project/c/aabbccdd-1122-3344-5566-77889900aabb";
+  assert.equal(classifyProbe(redirected, url, state), "READY");
+  assert.equal(classifyProbe(url, url, state), "READY",
+    "the ?prompt URL can remain while the composer is ready");
+  assert.equal(classifyProbe(targetUrl(null,"abc12345","a\nb"),
+    targetUrl(null,"abc12345","a\nb"),
+    {state:"READY",composer_text:"a b"}),"READY");
+
+  assert.equal(classifyProbe(url, url, {state:"READY",composer_text:"wrong draft"}),
+    "NOT_READY", "never send an unrelated composer draft");
+  assert.equal(classifyProbe("https://chatgpt.com/c/different", url, state), "BLOCKED");
+});
+
+
+test("browser upload helper waits per file before selecting next and handles duplicate names", async () => {
+  const {attachmentUploadScript} = await import("../../runtime/chatgpt/attachment-upload.mjs");
+  const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+  const script = new AsyncFunction("js","upload_file","sleep",
+    attachmentUploadScript(["/tmp/a/file.txt","/tmp/b/file.txt"]));
+  const attached=[];
+  const uploaded=[];
+  const result=await script(async expression => {
+    if (expression.includes("#upload-files")) return 'input[type="file"]';
+    if (expression.includes("button[aria-label^=")) return {names:attached.slice(),pending:false};
+    throw Error("unexpected expression");
+  }, async (_selector,path) => {
+    assert.equal(attached.length,uploaded.length,"previous attachment must be ready");
+    uploaded.push(path);
+    attached.push(path.split("/").pop());
+  }, async () => {});
+  assert.deepEqual(result,{ready:true,names:["file.txt","file.txt"]});
+  assert.equal(uploaded.length,2);
+});
