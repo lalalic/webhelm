@@ -12,7 +12,7 @@ function fixture(now = 100) {
     startSession: async () => ({ session_id: "mock" }),
     execSession: async () => ({ ok: true, value: null }),
     stopSession: async () => {},
-    now: () => now,
+    now: () => typeof now === 'function' ? now() : now,
   });
   return { q, root };
 }
@@ -432,4 +432,74 @@ test("browser upload helper waits per file before selecting next and handles dup
   }, async () => {});
   assert.deepEqual(result,{ready:true,names:["file.txt","file.txt"]});
   assert.equal(uploaded.length,2);
+});
+
+
+test("blocked pre-send turns retry after cooldown and preserve same-thread FIFO", async (t) => {
+  let clock = 100;
+  const { q, root } = fixture(() => clock);
+  t.after(async () => { await q.shutdown(); rmSync(root, {recursive: true, force: true}); });
+  const first = q.enqueue({thread_id: "owner", message: "first", idempotency_key: "first"}).queue_id;
+  const second = q.enqueue({thread_id: "owner", message: "second", idempotency_key: "second"}).queue_id;
+  const independent = q.enqueue({thread_id: "other", message: "other", idempotency_key: "other"}).queue_id;
+  q._probe = async () => "BLOCKED";
+  await q.process(q.claim("worker", clock));
+  assert.equal(q.rows().find(row => row.id === first).state, "BLOCKED");
+  assert.equal(q.rows().find(row => row.id === first).next_check_at, 160);
+  assert.equal(q.claim("independent", clock).id, independent);
+  q.transition(independent, "independent", "CHECKING", "SENDING");
+  q.transition(independent, "independent", "SENDING", "SENT", {delay: 0, receipt: "sent"});
+  assert.equal(q.claim("early", 159), null);
+  clock = 160;
+  const retry = q.claim("retry", clock);
+  assert.equal(retry.id, first);
+  assert.equal(retry.attempts, 2);
+  assert.equal(q.rows().find(row => row.id === second).state, "QUEUED");
+  await q.process(retry);
+  assert.equal(q.rows().find(row => row.id === first).next_check_at, 280);
+  assert.equal(q.claim("early-again", 279), null);
+  assert.equal(q.claim("ready", 280).id, first);
+});
+
+test("old blocked records resume after restart without resending an uncertain turn", async (t) => {
+  const {q, root} = fixture(100);
+  t.after(async () => { await q.shutdown(); rmSync(root, {recursive: true, force: true}); });
+  const id = q.enqueue({thread_id: "A", message: "old", idempotency_key: "old"}).queue_id;
+  q.claim("worker", 100);
+  q.transition(id, "worker", "CHECKING", "BLOCKED", {now: 100, delay: 0, receipt: "page blocked"});
+  const reopen = new ChatGPTQueue({
+    persistenceRoot: root, startSession: async () => ({session_id: "mock"}),
+    execSession: async () => ({}), stopSession: async () => {}, now: () => 200,
+  });
+  t.after(async () => reopen.shutdown());
+  assert.equal(reopen.claim("new", 200).id, id);
+  reopen.transition(id, "new", "CHECKING", "SENDING", {now: 200});
+  reopen.transition(id, "new", "SENDING", "UNCERTAIN", {now: 200, receipt: "ambiguous"});
+  assert.equal(reopen.claim("safe", 10000), null);
+});
+
+
+test("probe preserves ProseMirror paragraph boundaries before comparing prefilled text", async () => {
+  const {PROBE_JS, classifyProbe, targetUrl} = await import("../../runtime/chatgpt/chatgpt-probe.mjs");
+  const {runInNewContext} = await import("node:vm");
+  const lines = ["Gateway event", "metadata: important", "", "check JEL", "", "report result"];
+  const composer = {
+    children: lines.map(textContent => ({tagName: "P", textContent})),
+    textContent: lines.join(""),
+    getAttribute: key => key === "contenteditable" ? "true" : null,
+    getClientRects: () => [{}],
+  };
+  const state = runInNewContext(PROBE_JS, {
+    document: {
+      body: {innerText: "Open ChatGPT"},
+      querySelector: () => composer,
+      querySelectorAll: () => [],
+    },
+    getComputedStyle: () => ({visibility: "visible"}),
+  });
+  assert.equal(state.state, "READY");
+  assert.equal(state.composer_text, lines.join("\n"));
+  const url = targetUrl(null, "thread", lines.join("\n"));
+  assert.equal(classifyProbe(url, url, state), "READY");
+  assert.equal(classifyProbe(url, url, {...state, composer_text: lines.join("")}), "NOT_READY");
 });

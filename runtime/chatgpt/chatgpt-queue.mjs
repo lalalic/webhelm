@@ -64,6 +64,10 @@ const chatgptQueuePolicy = {
   claim(db, owner, now, leaseSeconds) {
     db.prepare("UPDATE turns SET state='UNCERTAIN',lease_owner=NULL,lease_until=NULL WHERE state='SENDING' AND lease_until<=?").run(now);
     db.prepare("UPDATE turns SET state='WAITING',lease_owner=NULL,lease_until=NULL,next_check_at=? WHERE state='CHECKING' AND lease_until<=?").run(now,now);
+    // BLOCKED is a pre-send failure. Retry after cooldown so a transient
+    // login or redirect cannot permanently starve all later turns in a thread.
+    // UNCERTAIN remains excluded: that turn might already have been sent.
+    db.prepare("UPDATE turns SET state='WAITING',lease_owner=NULL,lease_until=NULL,next_check_at=? WHERE state='BLOCKED' AND next_check_at<=?").run(now,now);
     const row=this.one(db, `SELECT t.* FROM turns t WHERE t.state IN ('QUEUED','WAITING') AND t.next_check_at<=? AND NOT EXISTS(SELECT 1 FROM turns older WHERE older.thread_id=t.thread_id AND older.seq<t.seq AND (older.state NOT IN ('SENT','CANCELLED') OR (older.state='SENT' AND older.next_check_at>?))) ORDER BY t.seq LIMIT 1`,now,now);
     if (!row) return null;
     db.prepare("UPDATE turns SET state='CHECKING',lease_owner=?,lease_until=?,attempts=attempts+1 WHERE id=?").run(owner,now+leaseSeconds,row.id);
@@ -181,7 +185,7 @@ export class ChatGPTQueue extends DurableQueueCore {
         target,
         release ? null : owner,
         release ? null : now + 120,
-        ["WAITING", "SENT"].includes(target) ? now + delay : now,
+        ["WAITING", "SENT", "BLOCKED"].includes(target) ? now + delay : now,
         receipt,
         id,
       );
@@ -283,9 +287,12 @@ export class ChatGPTQueue extends DurableQueueCore {
         return;
       }
       if (state === "BLOCKED") {
+        // Recheck pre-send failures with bounded exponential backoff (1m..1h).
+        const delay = Math.min(3600, 60 * (2 ** Math.min(6, Math.max(0, item.attempts - 1))));
         this.transition(item.id, owner, "CHECKING", "BLOCKED", {
-          receipt: "page blocked",
+          receipt: "page blocked", delay,
         });
+        this.logger({event: "page_blocked", queue_id: item.id, attempts: item.attempts, retry_in_seconds: delay});
         return;
       }
       if (state !== "READY") {

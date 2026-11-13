@@ -7,8 +7,34 @@ export function targetUrl(projectId, threadId, message) {
   return "https://chatgpt.com/c/" + encodeURIComponent(threadId) +
     "?" + new URLSearchParams({ prompt: message });
 }
-export const PROBE_JS =
-  `(() => { const visible=e=>!!e&&!!e.getClientRects().length&&getComputedStyle(e).visibility!=='hidden'; const body=(document.body?.innerText||'').toLowerCase(); if(body.includes('could not load this chatgpt conversation'))return {state:'BLOCKED',error:'thread_load_failed'}; if(body.includes('log in to chatgpt')||body.includes('sign in to chatgpt'))return {state:'BLOCKED',error:'authentication_required'}; const stop=[...document.querySelectorAll('button')].some(b=>{if(!visible(b))return false;const l=(b.getAttribute('aria-label')||'').trim().toLowerCase(),t=(b.getAttribute('title')||'').trim().toLowerCase(),d=(b.getAttribute('data-testid')||'').trim().toLowerCase();return ['stop generating','stop answering','stop response','stop'].includes(l)||['stop generating','stop answering'].includes(t)||['stop-button','stop-generating-button'].includes(d)}); if(stop)return {state:'RUNNING',stop_visible:true}; const e=document.querySelector('#prompt-textarea,[contenteditable="true"][data-lexical-editor="true"],[role="textbox"][contenteditable="true"],textarea'); const editable=e?.getAttribute?.('contenteditable')==='true'; return {state:visible(e)?'READY':'NOT_READY',stop_visible:false,composer_text:e?(editable?(e.textContent||''):(e.value||e.textContent||e.innerText||'')):''}; })()`;
+export const PROBE_JS = `(() => {
+  const visible = e => !!e && !!e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden';
+  const body = (document.body?.innerText || '').toLowerCase();
+  if (body.includes('could not load this chatgpt conversation'))
+    return {state: 'BLOCKED', error: 'thread_load_failed'};
+  if (body.includes('log in to chatgpt') || body.includes('sign in to chatgpt'))
+    return {state: 'BLOCKED', error: 'authentication_required'};
+  const stop = [...document.querySelectorAll('button')].some(b => {
+    if (!visible(b)) return false;
+    const label = (b.getAttribute('aria-label') || '').trim().toLowerCase();
+    const title = (b.getAttribute('title') || '').trim().toLowerCase();
+    const testId = (b.getAttribute('data-testid') || '').trim().toLowerCase();
+    return ['stop generating', 'stop answering', 'stop response', 'stop'].includes(label) ||
+      ['stop generating', 'stop answering'].includes(title) ||
+      ['stop-button', 'stop-generating-button'].includes(testId);
+  });
+  if (stop) return {state: 'RUNNING', stop_visible: true};
+  const e = document.querySelector('#prompt-textarea,[contenteditable="true"][data-lexical-editor="true"],[role="textbox"][contenteditable="true"],textarea');
+  const editable = e?.getAttribute?.('contenteditable') === 'true';
+  // ProseMirror uses <p> for each visual line, including empty lines.
+  // e.textContent and, in some Chrome builds, e.innerText omit those line
+  // boundaries, so a correctly prefilled multiline prompt never matches.
+  const paragraphs = editable ? [...e.children] : [];
+  const composerText = editable && paragraphs.length && paragraphs.every(p => p.tagName === 'P')
+    ? paragraphs.map(p => p.textContent || '').join('\\n')
+    : editable ? (e.innerText || e.textContent || '') : (e?.value || e?.textContent || e?.innerText || '');
+  return {state: visible(e) ? 'READY' : 'NOT_READY', stop_visible: false, composer_text: composerText};
+})()`;
 export function classifyProbe(observedUrl, expectedUrl, state) {
   const actual = new URL(observedUrl), expected = new URL(expectedUrl);
   const thread = url => {
