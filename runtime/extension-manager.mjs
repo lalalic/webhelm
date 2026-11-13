@@ -12,7 +12,7 @@ export const EXTENSION_HOME=path.resolve(process.env.WEBHELM_EXTENSION_HOME ||
   (SOURCE_MODE ? SOURCE : path.join(LOCAL_ROOT,'extension')));
 const FILES=[
   'manifest.json','service-worker.mjs','workspace-manager.mjs','workspace.html','helm.html','workspace-page.mjs',
-  'control-channel.mjs','control-rpc.mjs','workspace-summary.mjs','session-badge.mjs','popup.html','popup.mjs',
+  'control-channel.mjs','control-rpc.mjs','site-registry.mjs','workspace-summary.mjs','session-badge.mjs','popup.html','popup.mjs',
   ...[16,32,48,128].map(size => `icons/webhelm-${size}.png`),
 ];
 

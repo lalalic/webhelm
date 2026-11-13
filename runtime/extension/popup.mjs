@@ -3,6 +3,8 @@ let confirming = false;
 let chosen = null;
 let lastSignature = '';
 let lastQueueSignature = '';
+let lastSiteSignature = '';
+let currentSites = [];
 let refreshRunning = false;
 const queueRows = new Map();
 const queueGroups = new Map();
@@ -35,9 +37,45 @@ function actionButton(label, disabled, onClick, className = '') {
   return button;
 }
 
+function originForTab(url) {
+  try { const site=new URL(url); return site.protocol === 'https:' ? site.origin : null; }
+  catch { return null; }
+}
+
+function renderKeptSites(sites, busy, connected) {
+  const signature = JSON.stringify(sites) + `:${busy}:${connected}`;
+  if (signature === lastSiteSignature) return;
+  lastSiteSignature = signature;
+  const target = el('keepalive-list');
+  target.replaceChildren();
+  if (!sites.length) {
+    target.textContent='Toggle Keep Alive on a leased website to add it here.';
+    return;
+  }
+  const labels={alive:'Logged in',login_required:'Login required',unknown:'Login unknown',
+    error:'Check failed',unsupported:'No heartbeat action',pending:'Pending check'};
+  for (const site of sites) {
+    const row=document.createElement('div'); row.className='keepalive-row';
+    const details=document.createElement('div'); details.className='keepalive-info';
+    const name=actionButton(new URL(site.url).hostname,false,async()=>{
+      try {await rpc('workspace.control.site.open',{siteId:site.id});}
+      catch(error){el('message').textContent=error.message;}
+    },'tab-title');
+    const status=document.createElement('span'); status.className='keepalive-status';
+    status.textContent=labels[site.status] || 'Pending check';
+    status.dataset.status=site.status;
+    details.append(name,status);
+    row.append(details,actionButton('Remove',false,async()=>{
+      try {await rpc('workspace.control.site.remove',{siteId:site.id});lastSignature='';refresh();}
+      catch(error){el('message').textContent=error.message;}
+    }));
+    target.append(row);
+  }
+}
+
 function renderWorkspaces(workspaces, busy, connected) {
   const signature = JSON.stringify(workspaces.map(w => [
-    w.name,w.initialized,w.available,w.poolSize,w.idleTabs,w.leasedTabs,w.sessions.map(s => [s.session_id,s.tab_title,s.tabId]),
+    w.name,w.initialized,w.available,w.poolSize,w.idleTabs,w.leasedTabs,w.sessions.map(s => [s.session_id,s.tab_title,s.tabId,s.tab_url]),
   ])) + ':' + busy + ':' + connected;
   if (signature === lastSignature) return;
   lastSignature = signature;
@@ -73,7 +111,18 @@ function renderWorkspaces(workspaces, busy, connected) {
       }, 'tab-title');
       title.title = session.tab_title || 'Untitled tab';
       details.append(title);
-      sessionRow.append(details, actionButton('Stop', busy || !connected,
+      const siteId=originForTab(session.tab_url);
+      sessionRow.append(details);
+      if (siteId) {
+        const enabled=currentSites.some(site=>site.id===siteId);
+        sessionRow.append(actionButton(enabled?'On':'Keep Alive',busy||!connected,async()=>{
+          try {
+            await rpc('workspace.control.site.toggle',{sessionId:session.session_id,enabled:!enabled});
+            lastSignature='';refresh();
+          } catch(error){el('message').textContent=error.message;}
+        },enabled?'site-enabled':''));
+      }
+      sessionRow.append(actionButton('Stop', busy || !connected,
         () => showConfirmation('stop', {sessionId:session.session_id})));
       row.append(sessionRow);
     }
@@ -159,6 +208,8 @@ async function refresh() {
     el('daemon-status').textContent = state.connected ? 'Online' : 'Offline';
     el('daemon-status').className = `daemon-state ${state.connected ? 'online' : 'offline'}`;
     const busy = Boolean(state.request);
+    currentSites=state.keptSites || [];
+    renderKeptSites(currentSites,busy,state.connected);
     renderWorkspaces(state.workspaces || [], busy, state.connected);
     renderQueue(state.queue || [], busy, state.connected);
     el('confirm').disabled = !state.connected || busy;

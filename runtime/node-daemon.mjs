@@ -7,6 +7,7 @@ import vm from 'node:vm';
 import crypto from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { invokePlatformAction } from './platforms.mjs';
+import {createSiteKeepaliveScheduler} from './site-keepalive.mjs';
 import { ChatGPTQueue } from './chatgpt/chatgpt-queue.mjs';
 import { idleUrlFromIdentity, sameIdleUrl, staleSession, withinDeadline, SessionDeadlineError } from './session-lifecycle.mjs';
 import { stopMatchingSessions } from './session-control.mjs';
@@ -718,6 +719,22 @@ async function runPlatform(req) {
     self_heal_capable:!auto,result};
 }
 
+const siteKeepalive = createSiteKeepaliveScheduler({
+  listSites:() => extensionCall(null,'workspace.control.site.list'),
+  report:result => extensionCall(null,'workspace.control.site.report',result),
+  canRun:async() => {
+    if (shuttingDown) return false; // Low priority: use idle browser capacity only.
+    const capacity=await workspaceCapacity();
+    return Number.isInteger(capacity.available) && capacity.available > 0;
+  },
+  run:async plan => {
+    const outcome=await runPlatform({platform:plan.platform,action:plan.action,
+      url:plan.url,auto_session:true,config:{}});
+    if (!outcome.result.ok || outcome.result.cleanup?.release_error) throw Error('Platform heartbeat action failed or session not released');
+    return outcome.result.value;
+  },
+});
+
 export async function handle(req){switch(req.op){case'ping':return {ok:true,pid:process.pid,version:PACKAGE_VERSION,queue_paused:process.env.WEBHELM_CHATGPT_QUEUE_PAUSED==='1',session_count:sessions.size,managed_chrome:managedChrome||{profile_dir:PROFILE_DIR, endpoint:process.env.WEBHELM_CDP_URL||'http://127.0.0.1:9222',reused:true},chrome_guard:managedChromeGuard.status()};case'guard-check':{let status=await managedChromeGuard.tick();for(let retry=0;retry<6 && status.status!=='healthy' && !status.skipped;retry++){await delay(800);status=await managedChromeGuard.tick();}if(status.status!=='healthy' && !status.skipped)throw Error(`WebHelm Chrome health degraded: ${status.error||status.status}`);return {ok:true,chrome_guard:status};}case'heartbeat':return heartbeatSession(req.session_id);case'list':return {session_count:sessions.size,sessions:[...sessions.values()].map(s=>({session_id:s.session_id,workspace:s.workspace,target_id:s.targetId,last_used_at:s.last_used_at}))};case'start':return createSession(req);case'exec':return execute(req);case'stop':return stopSession(req.session_id);case'stop-all':return stopAllSessions();case'stop-workspace':{if(typeof req.workspace!=='string'||!req.workspace.trim())throw Error('workspace required');return stopWorkspaceSessions(req.workspace)}case'capacity':return workspaceCapacity(req);case'workspace-create':case'workspace-resize':case'workspace-delete':return workspaceOp(req);case'chatgpt-new-turn-enqueue':return getChatGPTQueue().enqueue(req.config);case'queue-list':return getChatGPTQueue().list();case'queue-cancel':return getChatGPTQueue().cancel(req.queue_id);case'platform-run':return runPlatform(req);default:throw Error(`unknown op: ${req.op}`)}}
 export function serve(conn) {
   let buffer = '', dispatched = false;
@@ -746,8 +763,10 @@ export function serve(conn) {
 
 async function main(){fs.mkdirSync(RUNTIME,{recursive:true,mode:0o700});let lockfd;try{lockfd=fs.openSync(LOCK,'wx',0o600);fs.writeFileSync(lockfd,String(process.pid))}catch{throw Error(`Node pilot lock exists: ${LOCK}`)}if(fs.existsSync(SOCKET)){try{const c=net.createConnection(SOCKET);await new Promise((res,rej)=>{c.once('connect',res);c.once('error',rej)});c.destroy();fs.closeSync(lockfd);fs.unlinkSync(LOCK);throw Error(`Node daemon socket already active: ${SOCKET}`)}catch(e){if(e.message.includes('already active'))throw e;fs.unlinkSync(SOCKET)}}socket=net.createServer(serve);await new Promise((res,rej)=>socket.listen(SOCKET,res).once('error',rej));fs.chmodSync(SOCKET,0o600);connectBrowser().catch(()=>{});managedChromeGuard.start();getChatGPTQueue();
   const controlTimer=setInterval(()=>pollExtensionControl(),3000);
+  const siteTimer=setInterval(()=>siteKeepalive.tick().catch(e=>console.warn(`WebHelm site keep-alive: ${e.message}`)),Math.max(1000,Number(process.env.WEBHELM_SITE_HEARTBEAT_POLL_MS)||30000));
   pollExtensionControl().catch(()=>{});
-  const cleanup=async()=>{if(shuttingDown)return;shuttingDown=true;clearInterval(controlTimer);managedChromeGuard.stop();if(chatgptQueue)await chatgptQueue.shutdown().catch(()=>{});await handle({op:'stop-all'}).catch(()=>{});socket?.close();try{if(fs.existsSync(SOCKET))fs.unlinkSync(SOCKET)}catch{}try{fs.closeSync(lockfd);fs.unlinkSync(LOCK)}catch{}process.exit(0)};process.on('SIGTERM',cleanup);process.on('SIGINT',cleanup)}
+  siteKeepalive.tick().catch(()=>{});
+  const cleanup=async()=>{if(shuttingDown)return;shuttingDown=true;clearInterval(controlTimer);clearInterval(siteTimer);managedChromeGuard.stop();if(chatgptQueue)await chatgptQueue.shutdown().catch(()=>{});await handle({op:'stop-all'}).catch(()=>{});socket?.close();try{if(fs.existsSync(SOCKET))fs.unlinkSync(SOCKET)}catch{}try{fs.closeSync(lockfd);fs.unlinkSync(LOCK)}catch{}process.exit(0)};process.on('SIGTERM',cleanup);process.on('SIGINT',cleanup)}
 // IPC duration is independent of the daemon's JS/Action execution timeout.
 // A wedged daemon can no longer strand CLI processes indefinitely.
 export function ipcTimeoutMs(op) {

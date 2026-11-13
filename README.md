@@ -45,6 +45,44 @@ For a real browser integration check on macOS, run `node test/e2e/extension-cont
 
 The Actions checkout is `~/.local/webhelm`, with site modules at `~/.local/webhelm/platforms`. Setup clones if absent, then reuses that checkout without discarding local modifications. Run `platform sync` for new commits. For a verified local Action fix, `platform publish --message "..."` tests, commits and pushes only the action changes to the separate repo.
 
+## Optional site Keep Alive (Extension)
+
+On a WebHelm-leased HTTPS page, use the Extension's **Keep Alive** toggle to
+register that website's **origin**. The website stays in the popup's Keep Alive
+Sites list even after the original Session ends. Click its name to open/focus
+that website in the existing managed Chrome profile and sign in again. Remove
+clears the registration. Credentials, cookies, URL query strings, and browser
+Session IDs are never copied into the registry. Site registration does **not**
+keep a WebHelm Session or Tab permanently leased.
+
+A Platform only needs a periodic heartbeat if that specific website requires
+one. Site Actions opt in **individually**, in their Actions checkout's
+`manifest.yaml`, for example:
+
+```yaml
+url_patterns:
+  - https://creator.example.com/*
+actions:
+  heartbeat: actions/_heartbeat.mjs
+keep_alive:
+  action: heartbeat
+  interval_minutes: 30
+  url: https://creator.example.com/
+```
+
+The Platform's heartbeat Action runs with the existing `helpers` and must be
+read-only. It returns `{status:'alive'|'login_required'|'unknown'}` after using
+site-specific evidence; never infer login solely from HTTP success or page
+load. WebHelm schedules only opted-in platforms, using a temporary browser
+Session and an idle pool slot. On failure, the UI displays **Check failed**;
+non-opted-in sites display **No heartbeat action** and can still be opened for
+manual login. Failed/unknown checks retry no faster than five minutes. Neither
+heartbeat nor browser persistence guarantees that the service will extend its
+login lifetime. No automatic credential input or challenge bypass occurs.
+
+The Platform Action implementation and its verification belong in
+`lalalic/webhelm-actions`, not in this Runtime repository.
+
 ## Architecture and compatibility
 
 The Runtime stores its managed Chrome profile, persistent FIFO queue, and IPC socket under `~/.config/webhelm/`. Run `webhelm migrate` with the legacy daemon and Chrome stopped to migrate existing `~/.config/browser-workspace/` data without dropping logins or queued turns. The command leaves a compatibility symlink for legacy maintenance scripts. Session idle GC runs on Node before new Session allocation (5 minutes without operations or explicit heartbeat); no background sweep is started. A timed-out Session refuses subsequent exec, platform Actions and heartbeat, while already-issued browser effects retain tab ownership until settled. A stop that times out while queued cannot execute a late release, and a stop already physically releasing keeps its Session closing until the release finishes. Managed tabs are navigated back to their Extension idle URL instead of closing CDP targets; the Extension does not use `tab.lastAccessed` GC. An async Session execution has a finite deadline: if it expires, its helper capabilities are revoked and the poisoned Session is collected on the next Tab request (or immediately by an explicit stop). Session stop also has a bounded drain/release deadline and cannot leave a permanent closing flag. Client IPC requests have an independent absolute timeout and return an error if the daemon does not respond. These safeguards do not introduce periodic background GC. Only one daemon is permitted to own the queue. A CLI package update does not kill a running daemon or close another agent's tabs; upgrade daemons when idle.

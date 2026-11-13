@@ -33,6 +33,15 @@
     .session-info strong { display:block; font-size:12px; }
     .session-info span { display:block; color:light-dark(var(--muted),#acb8c9); font-size:11px; }
     .session-row button { width:auto; padding:5px 9px; font-size:11px; }
+    #keepalive-list { max-height:160px; overflow-y:auto; border-bottom:1px solid light-dark(var(--border),#334155); padding-bottom:6px; font-size:11px; color:light-dark(var(--muted),#acb8c9); }
+    .keepalive-row { display:flex; align-items:center; gap:6px; padding:5px 0; }
+    .keepalive-info { flex:1; min-width:0; overflow:hidden; }
+    .keepalive-row button { width:auto; padding:4px 7px; font-size:11px; }
+    .keepalive-row .tab-title { width:100%; font-size:12px; }
+    .keepalive-status { display:block; font-size:10px; }
+    .keepalive-status[data-status="alive"] { color:#23915c; }
+    .keepalive-status[data-status="login_required"] { color:#ae3849; }
+    .session-row button.site-enabled { color:#23915c; }
     #queue-list { border-top:1px solid light-dark(var(--border),#334155); padding-top:6px; margin-top:2px; }
     .queue-platform { padding:5px 0; }
     .queue-platform + .queue-platform { border-top:1px solid light-dark(var(--border),#334155); }
@@ -57,6 +66,8 @@
   <header class="panel-heading">
     <span id="daemon-status" class="daemon-state" role="status">Connecting…</span>
   </header>
+  <strong>Keep Alive Sites</strong>
+  <div id="keepalive-list" aria-label="Keep Alive Sites">Loading…</div>
   <div id="workspace-list" class="session-list" aria-label="Workspaces" aria-live="polite">Connecting…</div>
   <div id="queue-list" class="session-list" aria-label="Queue" aria-live="polite">No queue entries</div>
   <section id="confirmation" hidden aria-label="Confirm clear sessions">

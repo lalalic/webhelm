@@ -13,6 +13,23 @@ const root=fs.mkdtempSync(path.join(os.tmpdir(),'webhelm-rename-e2e-'));
 const browserLog=fs.openSync(path.join(root,'browser.log'),'a');
 const daemonLog=fs.openSync(path.join(root,'daemon.log'),'a');
 const extension=stageExtension(path.join(root,'extension'));
+// One explicitly opted-in mock platform verifies the full daemon -> platform
+// Action -> Extension status path without contacting a real authenticated site.
+const mockPlatforms=path.join(root,'platforms');
+const mockPlatform=path.join(mockPlatforms,'e2e-platform');
+fs.mkdirSync(path.join(mockPlatform,'actions'),{recursive:true});
+fs.writeFileSync(path.join(mockPlatform,'manifest.yaml'),`platform: e2e-platform
+url_patterns:
+  - https://example.invalid/*
+actions:
+  heartbeat: actions/_heartbeat.mjs
+keep_alive:
+  action: heartbeat
+  interval_minutes: 30
+  url: https://example.invalid/
+`);
+fs.writeFileSync(path.join(mockPlatform,'actions','_heartbeat.mjs'),
+  `export default async function heartbeat(){return {status:'login_required'};}\n`);
 const port=await new Promise((resolve,reject)=>{
   const server=net.createServer();server.once('error',reject);
   server.listen(0,'127.0.0.1',()=>{const p=server.address().port;server.close(()=>resolve(p));});
@@ -23,7 +40,8 @@ const env={...process.env,WEBHELM_CONFIG_ROOT:path.join(root,'config'),
   WEBHELM_LOCK:path.join(root,'runtime','session-node.lock'),
   WEBHELM_CDP_URL:`http://127.0.0.1:${port}`,
   WEBHELM_EXTENSION_HOME:extension.path,
-  WEBHELM_CHATGPT_QUEUE_PAUSED:'1'};
+  WEBHELM_CHATGPT_QUEUE_PAUSED:'1',
+  WEBHELM_PLATFORM_DIR:mockPlatforms,WEBHELM_SITE_HEARTBEAT_POLL_MS:'1000'};
 const browserPath=process.env.WEBHELM_TEST_CHROME || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const chrome=spawn(browserPath,[
   `--user-data-dir=${path.join(root,'chrome')}`,`--remote-debugging-port=${port}`,
@@ -242,6 +260,31 @@ try {
   assert.ok(displayed.groups.every(group=>/1 session$/.test(group.stats)));
   assert.ok(displayed.height<450,'popup remains compact with two active workspaces');
   console.log('COMPACT WORKSPACE UI',JSON.stringify({groups:displayed.groups,height:displayed.height}));
+  // Keep Alive is attached to the site URL, not to a Session. The Session can
+  // subsequently navigate away or stop without removing the registered site.
+  const registeredOrigin='https://example.invalid';
+  const firstSite=await request({op:'exec',session_id:main.session_id,
+    code:"await cdp('Page.navigate',{url:'https://example.invalid/account?token=not-saved'})"});
+  assert.equal(firstSite.ok,true,JSON.stringify(firstSite));
+  await waitFor(async()=>evaluate(popupSid,`[...document.querySelectorAll('.session-row button')].some(button=>button.textContent==='Keep Alive')`),
+    'site Keep Alive button on leased tab');
+  await evaluate(popupSid,`[...document.querySelectorAll('.session-row button')].find(button=>button.textContent==='Keep Alive').click()`);
+  const siteAdded=await waitFor(async()=>{
+    const state=await rpc(workerSid,'workspace.control.status');
+    return state.keptSites.find(site=>site.id===registeredOrigin);
+  },'site registered');
+  assert.equal(siteAdded.url,registeredOrigin);
+  assert.equal(JSON.stringify(siteAdded).includes('not-saved'),false);
+  assert.equal(await waitFor(async()=>evaluate(popupSid,"document.querySelector('.keepalive-row .tab-title')?.textContent==='example.invalid'"),'site shown in Extension popup'),true);
+  const loginRequired=await waitFor(async()=>{
+    const state=await rpc(workerSid,'workspace.control.status');
+    return state.keptSites.find(entry=>entry.id===registeredOrigin && entry.status==='login_required') || null;
+  },'platform heartbeat reports login required');
+  assert.equal(loginRequired.platform,'e2e-platform');
+  await waitFor(async()=>(await request({op:'list'})).session_count===2,
+    'temporary heartbeat Session released');
+  console.log('PLATFORM HEARTBEAT PASS: optional Action returned login_required, temporary Session released');
+  console.log('KEEP ALIVE SITE TOGGLE PASS: website registered without token or Session binding');
   // Real isolated Chrome: title resolution and tab activation use the leased tab,
   // not a generated session identifier. Do not touch signed-in Chrome tabs.
   const titlePage='data:text/html,%3Ctitle%3EReview%20Target%20Tab%3C%2Ftitle%3E';
@@ -320,6 +363,19 @@ try {
   const stopMain=await request({op:'stop',session_id:main.session_id});
   assert.equal(stopMain.returned_to_idle,true);
   assert.equal(await waitFor(async()=>await badgeText()==='0'?'0':null,'badge final zero'),'0');
+  assert.equal((await rpc(workerSid,'workspace.control.status')).keptSites.length,1,
+    'Keep Alive site persists after its original browser Session stops');
+  await evaluate(popupSid,"document.querySelector('.keepalive-row .tab-title').click()");
+  await waitFor(async()=>{
+    const tabs=await evaluate(workerSid,'chrome.tabs.query({})');
+    return tabs.some(tab=>tab.url?.startsWith('https://example.invalid'));
+  },'saved site reopened for manual login');
+  await evaluate(popupSid,"document.querySelector('.keepalive-row button:last-child').click()");
+  await waitFor(async()=>{
+    const state=await rpc(workerSid,'workspace.control.status');
+    return !state.keptSites.length;
+  },'Keep Alive site removed');
+  console.log('KEEP ALIVE RESTORE PASS: saved site survives Session stop, opens for login, and removes cleanly');
   const buttonsDisabled=await waitFor(async()=>await evaluate(popupSid,`[...document.querySelectorAll('.workspace-title button')].length>0 && [...document.querySelectorAll('.workspace-title button')].every(button=>button.disabled)`)?true:null,'disabled clear-session buttons at zero');
   assert.equal(buttonsDisabled,true);
   console.log('BADGE PASS: 1 → 0 → 2 → 1 → 0 across real daemon sessions');

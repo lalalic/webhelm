@@ -32,7 +32,7 @@ export function platformManifest(platform) {
 
 export function platformProfile(platform) {
   const manifest = platformManifest(platform);
-  const fields = ['platform', 'display_name', 'aliases', 'implementation_status', 'media', 'fields', 'capabilities', 'content_mapping', 'notes'];
+  const fields = ['platform', 'display_name', 'aliases', 'implementation_status', 'media', 'fields', 'capabilities', 'content_mapping', 'keep_alive', 'notes'];
   return Object.fromEntries(fields.filter(k => k in manifest).map(k => [k, manifest[k]]));
 }
 

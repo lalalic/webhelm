@@ -1,3 +1,4 @@
+import {siteOrigin, setKeptSite, listKeptSites, sitesWithStatus, reportKeptSite} from "./site-registry.mjs";
 function validTabId(tabId) { return Number.isSafeInteger(tabId) && tabId > 0; }
 function validateQueueUrl(url) {
   const parsed = new URL(url);
@@ -17,11 +18,11 @@ export function createControlRpc({control, manager, summarizeWorkspaces, schedul
             if (!validTabId(session.tabId)) return session;
             try {
               const tab = await chromeApi.tabs.get(session.tabId);
-              return {...session, tab_title: tab.title || 'Untitled tab'};
+              return {...session, tab_title: tab.title || 'Untitled tab', tab_url:tab.url || ''};
             } catch { return {...session, tabId:null}; }
           })),
         })));
-        return {...state,...summary,workspaces};
+        return {...state,...summary,workspaces,keptSites:chromeApi.storage?.local ? await sitesWithStatus(chromeApi) : []};
       }
       case "workspace.control.activateTab": {
         const state = await control.status();
@@ -50,6 +51,45 @@ export function createControlRpc({control, manager, summarizeWorkspaces, schedul
         const opened = await chromeApi.tabs.create({url, active:true});
         return {ok:true,tabId:opened.id,opened:true};
       }
+      case "workspace.control.site.toggle": {
+        const state = await control.status();
+        if (!state.connected) throw Error('WebHelm daemon is not responding');
+        const session = state.sessions.find(s => s.session_id === args.sessionId);
+        if (!session || !validTabId(session.tabId)) throw Error('Session tab is no longer leased');
+        const tab = await chromeApi.tabs.get(session.tabId);
+        const id = siteOrigin(tab.url || '');
+        return setKeptSite(chromeApi,id,Boolean(args.enabled));
+      }
+      case "workspace.control.site.remove": {
+        const site = (await listKeptSites(chromeApi)).find(s => s.id === args.siteId);
+        if (!site) throw Error('Keep Alive site is no longer registered');
+        return setKeptSite(chromeApi,site.url,false);
+      }
+      case "workspace.control.site.open": {
+        const site = (await listKeptSites(chromeApi)).find(s => s.id === args.siteId);
+        if (!site) throw Error('Keep Alive site is no longer registered');
+        const url = siteOrigin(site.url);
+        const daemon = await control.status();
+        const leasedIds = new Set(daemon.connected ? daemon.sessions.flatMap(session =>
+          Array.isArray(session.tabIds) ? session.tabIds : [session.tabId]) : []);
+        // Never hand a human-login operation an active agent-owned leased Tab.
+        const existing = daemon.connected && (await chromeApi.tabs.query({})).find(tab => {
+          if (leasedIds.has(tab.id)) return false;
+          try { return siteOrigin(tab.url) === url; } catch { return false; }
+        });
+        if (existing) {
+          await chromeApi.tabs.update(existing.id,{active:true});
+          await chromeApi.windows.update(existing.windowId,{focused:true});
+          return {ok:true,tabId:existing.id,focused:true};
+        }
+        const opened = await chromeApi.tabs.create({url,active:true});
+        return {ok:true,tabId:opened.id,opened:true};
+      }
+      // Daemon-only control RPCs, unavailable to extension pages.
+      case "workspace.control.site.list":
+        return listKeptSites(chromeApi);
+      case "workspace.control.site.report":
+        return reportKeptSite(chromeApi,args);
       case "workspace.control.requestStop":
         return control.requestStop(args.action, args.sessionId, args.workspace);
       case "workspace.control.queueCancel":
