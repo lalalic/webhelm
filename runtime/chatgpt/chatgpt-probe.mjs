@@ -24,7 +24,7 @@ export const PROBE_JS = `(() => {
       ['stop-button', 'stop-generating-button'].includes(testId);
   });
   if (stop) return {state: 'RUNNING', stop_visible: true};
-  const e = document.querySelector('#prompt-textarea,[contenteditable="true"][data-lexical-editor="true"],[role="textbox"][contenteditable="true"],textarea');
+  const e = [...document.querySelectorAll('#prompt-textarea,[contenteditable="true"][data-lexical-editor="true"],[role="textbox"][contenteditable="true"],textarea')].find(visible);
   const editable = e?.getAttribute?.('contenteditable') === 'true';
   // ProseMirror uses <p> for each visual line, including empty lines.
   // e.textContent and, in some Chrome builds, e.innerText omit those line

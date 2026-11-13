@@ -493,7 +493,7 @@ test("probe preserves ProseMirror paragraph boundaries before comparing prefille
     document: {
       body: {innerText: "Open ChatGPT"},
       querySelector: () => composer,
-      querySelectorAll: () => [],
+      querySelectorAll: () => [composer],
     },
     getComputedStyle: () => ({visibility: "visible"}),
   });
@@ -502,4 +502,34 @@ test("probe preserves ProseMirror paragraph boundaries before comparing prefille
   const url = targetUrl(null, "thread", lines.join("\n"));
   assert.equal(classifyProbe(url, url, state), "READY");
   assert.equal(classifyProbe(url, url, {...state, composer_text: lines.join("")}), "NOT_READY");
+});
+
+
+test("prefill probe ignores hidden composer and hidden Send controls", async () => {
+  const {PROBE_JS,classifyProbe,targetUrl} = await import("../../runtime/chatgpt/chatgpt-probe.mjs");
+  const {SEND_ENABLED_JS} = await import("../../runtime/chatgpt/lifecycle-common.mjs");
+  const {runInNewContext} = await import("node:vm");
+  const hidden = {
+    children: [{tagName: 'P', textContent:'stale'}], textContent:'stale',
+    getAttribute:()=> 'true', getClientRects:()=>[],
+  };
+  const current = {
+    children: [{tagName:'P',textContent:'Current'}, {tagName:'P',textContent:'owner reply'}],
+    textContent:'Currentowner reply',getAttribute:k=>k==='contenteditable'?'true':null,
+    getClientRects:()=>[{}],
+  };
+  const hiddenButton = {getClientRects:()=>[],disabled:false,getAttribute:()=>null};
+  const visibleButton = {getClientRects:()=>[{}],disabled:false,getAttribute:()=>null};
+  const document = {
+    body:{innerText:'ChatGPT'},
+    querySelectorAll:selector => selector==='button' ? [] : selector.includes('button')
+      ? [hiddenButton, visibleButton] : [hidden, current],
+  };
+  const context = {document,getComputedStyle:()=>({visibility:'visible'})};
+  const state=runInNewContext(PROBE_JS,context);
+  assert.equal(state.state,'READY');
+  assert.equal(state.composer_text,'Current\nowner reply');
+  assert.equal(runInNewContext(SEND_ENABLED_JS,context),true);
+  const url=targetUrl(null,'thread','Current\nowner reply');
+  assert.equal(classifyProbe(url,url,state),'READY');
 });
