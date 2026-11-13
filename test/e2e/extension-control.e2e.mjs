@@ -266,6 +266,20 @@ try {
   const firstSite=await request({op:'exec',session_id:main.session_id,
     code:"await cdp('Page.navigate',{url:'https://example.invalid/account?token=not-saved'})"});
   assert.equal(firstSite.ok,true,JSON.stringify(firstSite));
+  // A Custom-Workspace Session visiting the same HTTPS site must not expose
+  // Keep Alive, and must be rejected by the Service Worker even if invoked
+  // directly (UI hiding alone is insufficient).
+  const customSite=await request({op:'exec',session_id:custom.session_id,
+    code:"await cdp('Page.navigate',{url:'https://example.invalid/custom'})"});
+  assert.equal(customSite.ok,true,JSON.stringify(customSite));
+  await waitFor(async()=>{
+    const state=await rpc(workerSid,'workspace.control.status');
+    return state.workspaces.find(w=>w.name==='Custom')?.sessions[0]?.tab_url?.startsWith('https://example.invalid');
+  },'Custom Session HTTPS navigation');
+  await assert.rejects(rpc(workerSid,'workspace.control.site.toggle',{sessionId:custom.session_id,enabled:true}),
+    /only from a WebHelm Session/);
+  await waitFor(async()=>evaluate(popupSid,`(()=>{const sections=[...document.querySelectorAll('.workspace-row')];const custom=sections.find(r=>r.querySelector('.workspace-title strong')?.textContent==='Custom');return custom && ![...custom.querySelectorAll('.session-row button')].some(b=>b.textContent==='Keep Alive'||b.textContent==='On')})()`),
+    'Custom workspace has no Keep Alive toggle');
   await waitFor(async()=>evaluate(popupSid,`[...document.querySelectorAll('.session-row button')].some(button=>button.textContent==='Keep Alive')`),
     'site Keep Alive button on leased tab');
   await evaluate(popupSid,`[...document.querySelectorAll('.session-row button')].find(button=>button.textContent==='Keep Alive').click()`);
@@ -281,6 +295,21 @@ try {
     return state.keptSites.find(entry=>entry.id===registeredOrigin && entry.status==='login_required') || null;
   },'platform heartbeat reports login required');
   assert.equal(loginRequired.platform,'e2e-platform');
+  const compact=await waitFor(async()=>evaluate(popupSid,`(()=>{const row=document.querySelector('.keepalive-row'),dot=row?.querySelector('.keepalive-status'),label=row?.querySelector('.keepalive-name'),remove=row?.querySelector('.keepalive-remove');return dot?.dataset.status==='inactive'&&label&&remove?{rowHeight:row.getBoundingClientRect().height,dotColor:getComputedStyle(dot).backgroundColor,greenLabel:label.classList.contains('is-logged-in'),removeLabel:remove.getAttribute('aria-label'),text:row.innerText,children:row.children.length}:null})()`),
+    'compact gray login-required site row');
+  assert.ok(compact.rowHeight <= 32,'one-line site row stays compact');
+  assert.equal(compact.children,3,'dot, hostname and remove share one row');
+  assert.equal(compact.greenLabel,false);
+  assert.match(compact.removeLabel,/Remove example.invalid/);
+  assert.ok(!compact.text.includes('Login required'),'status is shown by color, not a second line');
+  const markedAlive=await rpc(workerSid,'workspace.control.site.report',{
+    id:siteAdded.id,revision:siteAdded.revision,status:'alive',platform:'e2e-platform'});
+  assert.equal(markedAlive.ok,true);
+  const green=await waitFor(async()=>evaluate(popupSid,`(()=>{const dot=document.querySelector('.keepalive-status'),label=document.querySelector('.keepalive-name');return dot?.dataset.status==='alive'&&label?.classList.contains('is-logged-in')?{color:getComputedStyle(dot).backgroundColor,title:label.title}:null})()`),
+    'green logged-in site row');
+  assert.notEqual(green.color,compact.dotColor);
+  assert.match(green.title,/Logged in/);
+  console.log('COMPACT KEEP ALIVE UI PASS: one-line gray/green status and accessible remove');
   await waitFor(async()=>(await request({op:'list'})).session_count===2,
     'temporary heartbeat Session released');
   console.log('PLATFORM HEARTBEAT PASS: optional Action returned login_required, temporary Session released');

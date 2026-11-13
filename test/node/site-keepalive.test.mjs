@@ -99,3 +99,18 @@ test('extension popup can toggle only a live leased tab; inactive entry opens on
   await rpc('workspace.control.site.remove',{siteId:site.id});
   assert.equal((await rpc('workspace.control.status')).keptSites.length,0);
 });
+
+
+test('keep-alive registration is restricted to the WebHelm workspace, including disabling',async()=>{
+  const {chrome}=mockChrome();
+  const channel=new ControlChannel(chrome,()=>5000,()=> 'request-1');
+  await channel.poll([{session_id:'other',workspace:'Custom',tabId:11}]);
+  const rpc=createControlRpc({control:channel,chromeApi:chrome,
+    manager:{async list(){return {workspaces:[{name:'Custom',initialized:true,poolSize:3,idle:2,leased:1}]};}},
+    summarizeWorkspaces,scheduleBadge(){}});
+  for (const enabled of [true,false]) {
+    await assert.rejects(rpc('workspace.control.site.toggle',{sessionId:'other',enabled}),
+      /only from a WebHelm Session/);
+  }
+  assert.deepEqual(await listKeptSites(chrome),[]);
+});

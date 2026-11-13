@@ -33,14 +33,13 @@
     .session-info strong { display:block; font-size:12px; }
     .session-info span { display:block; color:light-dark(var(--muted),#acb8c9); font-size:11px; }
     .session-row button { width:auto; padding:5px 9px; font-size:11px; }
-    #keepalive-list { max-height:160px; overflow-y:auto; border-bottom:1px solid light-dark(var(--border),#334155); padding-bottom:6px; font-size:11px; color:light-dark(var(--muted),#acb8c9); }
-    .keepalive-row { display:flex; align-items:center; gap:6px; padding:5px 0; }
-    .keepalive-info { flex:1; min-width:0; overflow:hidden; }
-    .keepalive-row button { width:auto; padding:4px 7px; font-size:11px; }
-    .keepalive-row .tab-title { width:100%; font-size:12px; }
-    .keepalive-status { display:block; font-size:10px; }
-    .keepalive-status[data-status="alive"] { color:#23915c; }
-    .keepalive-status[data-status="login_required"] { color:#ae3849; }
+    #keepalive-list { max-height:160px; overflow-y:auto; border-bottom:1px solid light-dark(var(--border),#334155); padding:3px 0 5px; font-size:11px; color:light-dark(var(--muted),#acb8c9); }
+    .keepalive-row { display:flex; align-items:center; gap:7px; min-height:25px; padding:2px 0; }
+    .keepalive-status { flex:0 0 7px; width:7px; height:7px; border-radius:50%; background:light-dark(#8893a1,#8995a5); }
+    .keepalive-status[data-status="alive"] { background:#23915c; }
+    .keepalive-row .keepalive-name { flex:1; min-width:0; color:light-dark(var(--muted),#acb8c9); font-size:11px; font-weight:500; }
+    .keepalive-row .keepalive-name.is-logged-in { color:#23915c; }
+    .keepalive-row .keepalive-remove { flex:0 0 19px; width:19px; padding:1px; border:0; background:transparent; color:light-dark(var(--muted),#acb8c9); font-size:16px; font-weight:400; line-height:18px; }
     .session-row button.site-enabled { color:#23915c; }
     #queue-list { border-top:1px solid light-dark(var(--border),#334155); padding-top:6px; margin-top:2px; }
     .queue-platform { padding:5px 0; }

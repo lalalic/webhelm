@@ -56,6 +56,8 @@ export function createControlRpc({control, manager, summarizeWorkspaces, schedul
         if (!state.connected) throw Error('WebHelm daemon is not responding');
         const session = state.sessions.find(s => s.session_id === args.sessionId);
         if (!session || !validTabId(session.tabId)) throw Error('Session tab is no longer leased');
+        if (session.workspace !== 'WebHelm')
+          throw Error('Keep Alive can be enabled only from a WebHelm Session');
         const tab = await chromeApi.tabs.get(session.tabId);
         const id = siteOrigin(tab.url || '');
         return setKeptSite(chromeApi,id,Boolean(args.enabled));

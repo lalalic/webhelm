@@ -49,26 +49,32 @@ function renderKeptSites(sites, busy, connected) {
   const target = el('keepalive-list');
   target.replaceChildren();
   if (!sites.length) {
-    target.textContent='Toggle Keep Alive on a leased website to add it here.';
+    target.textContent='Enable Keep Alive from a WebHelm Session.';
     return;
   }
-  const labels={alive:'Logged in',login_required:'Login required',unknown:'Login unknown',
-    error:'Check failed',unsupported:'No heartbeat action',pending:'Pending check'};
+  const labels={alive:'Logged in',login_required:'Login required',unknown:'Login not confirmed',
+    error:'Heartbeat failed',unsupported:'No heartbeat action',pending:'Checking login'};
   for (const site of sites) {
     const row=document.createElement('div'); row.className='keepalive-row';
-    const details=document.createElement('div'); details.className='keepalive-info';
+    const loggedIn=site.status==='alive';
+    const statusText=labels[site.status] || labels.pending;
+    const status=document.createElement('span'); status.className='keepalive-status';
+    status.dataset.status=loggedIn?'alive':'inactive';
+    status.title=statusText;
+    status.setAttribute('aria-hidden','true');
     const name=actionButton(new URL(site.url).hostname,false,async()=>{
       try {await rpc('workspace.control.site.open',{siteId:site.id});}
       catch(error){el('message').textContent=error.message;}
-    },'tab-title');
-    const status=document.createElement('span'); status.className='keepalive-status';
-    status.textContent=labels[site.status] || 'Pending check';
-    status.dataset.status=site.status;
-    details.append(name,status);
-    row.append(details,actionButton('Remove',false,async()=>{
+    },`tab-title keepalive-name ${loggedIn?'is-logged-in':''}`);
+    name.title=`${statusText} · Click to open site`;
+    name.setAttribute('aria-label',`${new URL(site.url).hostname}: ${statusText}. Open site`);
+    const remove=actionButton('×',false,async()=>{
       try {await rpc('workspace.control.site.remove',{siteId:site.id});lastSignature='';refresh();}
       catch(error){el('message').textContent=error.message;}
-    }));
+    },'keepalive-remove');
+    remove.title=`Remove ${new URL(site.url).hostname} from Keep Alive`;
+    remove.setAttribute('aria-label',remove.title);
+    row.append(status,name,remove);
     target.append(row);
   }
 }
@@ -76,7 +82,7 @@ function renderKeptSites(sites, busy, connected) {
 function renderWorkspaces(workspaces, busy, connected) {
   const signature = JSON.stringify(workspaces.map(w => [
     w.name,w.initialized,w.available,w.poolSize,w.idleTabs,w.leasedTabs,w.sessions.map(s => [s.session_id,s.tab_title,s.tabId,s.tab_url]),
-  ])) + ':' + busy + ':' + connected;
+  ])) + ':' + JSON.stringify(currentSites.map(site=>site.id)) + ':' + busy + ':' + connected;
   if (signature === lastSignature) return;
   lastSignature = signature;
   const target = el('workspace-list');
@@ -113,7 +119,7 @@ function renderWorkspaces(workspaces, busy, connected) {
       details.append(title);
       const siteId=originForTab(session.tab_url);
       sessionRow.append(details);
-      if (siteId) {
+      if (workspace.name === 'WebHelm' && siteId) {
         const enabled=currentSites.some(site=>site.id===siteId);
         sessionRow.append(actionButton(enabled?'On':'Keep Alive',busy||!connected,async()=>{
           try {
