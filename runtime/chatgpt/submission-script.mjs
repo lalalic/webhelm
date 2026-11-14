@@ -4,15 +4,14 @@ import { SEND_ENABLED_JS } from "./lifecycle-common.mjs";
 /** Source executed inside a caller-owned WebHelm Session, never a separate tab. */
 export function submissionScript(item) {
   const prompt = item.message.slice(0, 120);
-  const selectorJS = "(() => {for(const s of ['button[aria-label=\"Send\"]','button[data-testid=\"send-button\"]','button[aria-label=\"Send prompt\"]']){const b=document.querySelector(s);if(b&&b.getClientRects().length&&!b.disabled)return s;}return null;})()";
+  const selectorJS = "(() => { const selector=\'button[aria-label=\"Send\"],button[data-testid=\"send-button\"],button[aria-label=\"Send prompt\"],form button[type=\"submit\"]\'; for(const b of document.querySelectorAll(\'[data-webhelm-queue-send]\'))b.removeAttribute(\'data-webhelm-queue-send\'); for(const b of document.querySelectorAll(selector)){if(!b.getClientRects().length||b.disabled||b.getAttribute(\'aria-disabled\')===\'true\')continue;b.setAttribute(\'data-webhelm-queue-send\',\'1\');return \'[data-webhelm-queue-send=\"1\"]\';} return null; })()";
   const userTurnsJS = "(() => [...document.querySelectorAll('h4[data-conversation-role=\"user\"]')].filter(h=>(h.parentElement?.innerText||'').includes(" +
     JSON.stringify(prompt) + ")).length)()";
   return [
     "return await (async()=>{",
     "const gate=await js("+JSON.stringify(PROBE_JS)+");",
-    "const url=new URL((await page_info()).url);",
-    "const actualId=url.pathname.split('/c/')[1]?.split('/')[0]||'';",
-    "if(decodeURIComponent(actualId)!=="+JSON.stringify(item.thread_id)+
+    "const actualId=await js("+JSON.stringify("location.pathname.split('/c/')[1]?.split('/')[0]||''")+");",
+    "if(actualId!=="+JSON.stringify(item.thread_id)+
       ")return {diagnostic:'thread_redirect_mismatch'};",
     "if(gate?.state!=='READY'||!(await js("+JSON.stringify(SEND_ENABLED_JS)+")))",
     "  return {diagnostic:'pre_send_gate_not_ready'};",

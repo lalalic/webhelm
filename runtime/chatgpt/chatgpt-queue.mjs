@@ -13,6 +13,7 @@ const transitions = new Set([
   "CHECKING>SENDING",
   "CHECKING>BLOCKED",
   "SENDING>SENT",
+  "SENDING>WAITING",
   "SENDING>UNCERTAIN",
   "UNCERTAIN>SENT",
   "UNCERTAIN>WAITING",
@@ -304,13 +305,25 @@ export class ChatGPTQueue extends DurableQueueCore {
       }
       this.transition(item.id, owner, "CHECKING", "SENDING");
       const receipt = await this._send(item);
-      if (!["send-button-disabled", "user-turn"].includes(receipt?.verified_by)) {
+      // These diagnostics are all returned before clicking Send. A safe retry
+      // must not block this thread forever as an ambiguous delivery.
+      if (["pre_send_gate_not_ready", "send_control_not_found", "thread_redirect_mismatch"]
+          .includes(receipt?.diagnostic)) {
+        this.transition(item.id, owner, "SENDING", "WAITING", {
+          delay: this.intervalMs / 1000,
+          receipt: receipt.diagnostic,
+        });
+      } else if (["send-button-disabled", "user-turn"].includes(receipt?.verified_by)) {
+        this.transition(item.id, owner, "SENDING", "SENT", {
+          receipt: receipt.verified_by,
+        });
+      } else {
+        // After any unverified click, keep UNCERTAIN until a read-only check
+        // proves that the turn is present or absent; never send twice blindly.
         this.transition(item.id, owner, "SENDING", "UNCERTAIN", {
           receipt: receipt?.diagnostic || "missing_user_turn_receipt",
         });
-      } else {this.transition(item.id, owner, "SENDING", "SENT", {
-          receipt: "send-button-disabled",
-        });}
+      }
     } catch (e) {
       const diagnostic = this._safeDiagnostic(e),
         current = this._one("SELECT * FROM turns WHERE id=?", item.id);

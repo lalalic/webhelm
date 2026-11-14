@@ -533,3 +533,19 @@ test("prefill probe ignores hidden composer and hidden Send controls", async () 
   const url=targetUrl(null,'thread','Current\nowner reply');
   assert.equal(classifyProbe(url,url,state),'READY');
 });
+
+
+test("pre-click Send diagnostics retry safely instead of blocking the thread UNCERTAIN", async (t) => {
+  for (const diagnostic of ["pre_send_gate_not_ready", "send_control_not_found", "thread_redirect_mismatch"]) {
+    const {q, root} = fixture(100);
+    t.after(async () => { await q.shutdown(); rmSync(root, {recursive:true,force:true}); });
+    q._probe = async () => "READY";
+    q._send = async () => ({diagnostic});
+    const id = q.enqueue({thread_id:"t", message:"hi", idempotency_key:`k-${diagnostic}`}).queue_id;
+    await q.process(q.claim("worker"));
+    const row = q.rows().find(r => r.id === id);
+    assert.equal(row.state, "WAITING", diagnostic);
+    assert.equal(row.receipt, diagnostic);
+    assert.equal(row.attempts, 1);
+  }
+});
