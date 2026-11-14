@@ -100,7 +100,7 @@ export class ChatGPTQueue extends DurableQueueCore {
       startSession,
       execSession,
       stopSession,
-      intervalMs = 60000,
+      intervalMs = 10000,
       concurrency = 4,
       leaseSeconds = 120,
       now = () => Date.now() / 1000,
@@ -314,8 +314,10 @@ export class ChatGPTQueue extends DurableQueueCore {
           receipt: receipt.diagnostic,
         });
       } else if (["send-button-disabled", "user-turn"].includes(receipt?.verified_by)) {
+        // A confirmed user turn does not need a fixed 60s same-thread gap.
+        // A follow-up is re-probed; RUNNING still blocks overlapping sends.
         this.transition(item.id, owner, "SENDING", "SENT", {
-          receipt: receipt.verified_by,
+          delay: 0, receipt: receipt.verified_by,
         });
       } else {
         // After any unverified click, keep UNCERTAIN until a read-only check

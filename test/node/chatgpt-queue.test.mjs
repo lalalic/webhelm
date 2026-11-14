@@ -549,3 +549,28 @@ test("pre-click Send diagnostics retry safely instead of blocking the thread UNC
     assert.equal(row.attempts, 1);
   }
 });
+
+
+test("sequential queued messages do not inherit a fixed 60s delay", async (t) => {
+  const {q,root}=fixture(100);
+  t.after(async()=>{await q.shutdown();rmSync(root,{recursive:true,force:true});});
+  q._probe=async()=>"READY";
+  q._send=async()=>({verified_by:"user-turn"});
+  const first=q.enqueue({thread_id:"t",message:"hi",idempotency_key:"first"}).queue_id;
+  const next=q.enqueue({thread_id:"t",message:"good day",idempotency_key:"next"}).queue_id;
+  await q.process(q.claim("worker1"));
+  assert.equal(q.rows().find(r=>r.id===first).state,"SENT");
+  assert.equal(q.rows().find(r=>r.id===first).next_check_at,100);
+  assert.equal(q.claim("worker2").id,next);
+});
+
+test("following messages wait while ChatGPT is still generating",async(t)=>{
+  const {q,root}=fixture(100);
+  t.after(async()=>{await q.shutdown();rmSync(root,{recursive:true,force:true});});
+  q._probe=async()=>"RUNNING";
+  const id=q.enqueue({thread_id:"t",message:"new message",idempotency_key:"k-running"}).queue_id;
+  await q.process(q.claim("worker"));
+  const row=q.rows().find(r=>r.id===id);
+  assert.equal(row.state,"WAITING");
+  assert.equal(row.next_check_at,110);
+});
