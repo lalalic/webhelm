@@ -71,3 +71,17 @@ export function compactQueue(items, {expanded=false,maxHeads=8}={}) {
   return {visible,total:all.length,threads:threads.size,behind,
     hidden:all.length-visible.length,uncertain,blocked};
 }
+
+// Keep hidden groups out of the toolbar even if a running older worker has
+// not yet reloaded its control RPC. Do not mutate the persisted configuration.
+export const WORKSPACE_STORAGE_KEY='browserWorkspaceManager.v1';
+export function menuWorkspaces(workspaces,config={}) {
+  return (Array.isArray(workspaces)?workspaces:[]).filter(workspace =>
+    workspace.showInMenu !== false && config?.workspaces?.[workspace.name]?.showInMenu !== false);
+}
+export async function readMenuWorkspaces(chromeApi,workspaces) {
+  try {
+    const record=await chromeApi.storage.local.get(WORKSPACE_STORAGE_KEY);
+    return menuWorkspaces(workspaces,record[WORKSPACE_STORAGE_KEY]);
+  } catch { return menuWorkspaces(workspaces); }
+}

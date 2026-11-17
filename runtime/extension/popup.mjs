@@ -1,4 +1,4 @@
-import {readKeptSites, setStoredSite, compactQueue} from './popup-data.mjs';
+import {readKeptSites, setStoredSite, compactQueue, readMenuWorkspaces} from './popup-data.mjs';
 const el = id => document.getElementById(id);
 let confirming = false;
 let chosen = null;
@@ -250,7 +250,7 @@ async function refresh() {
     canControlSites=Array.isArray(state.keptSites);
     currentSites=await readKeptSites(chrome,state.keptSites);
     renderKeptSites(currentSites,busy,state.connected);
-    renderWorkspaces(state.workspaces || [],busy,state.connected);
+    renderWorkspaces(await readMenuWorkspaces(chrome,state.workspaces || []),busy,state.connected);
     currentQueue=state.queue||[];
     queueBusy=busy;queueConnected=state.connected;
     renderQueue(currentQueue,busy,state.connected);

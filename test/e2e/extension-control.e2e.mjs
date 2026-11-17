@@ -212,7 +212,7 @@ try {
   const maliciousPage=(await cdp('Target.createTarget',{url:`chrome-extension://${EXTENSION_ID}/helm.html`})).targetId;
   const maliciousSid=await attach(maliciousPage);
   await waitFor(async()=>evaluate(maliciousSid,"typeof chrome !== 'undefined' && !!chrome.runtime"),'extension page ready');
-  for (const method of ['workspace.acquireIdentity','workspace.acquire','workspace.releaseAll','workspace.resize']) {
+  for (const method of ['workspace.acquireIdentity','workspace.acquire','workspace.releaseAll','workspace.resize','workspace.configure']) {
     const denied=await evaluate(maliciousSid,`chrome.runtime.sendMessage({method:${JSON.stringify(method)},args:{name:'Custom',poolSize:16}})`);
     assert.equal(denied.ok,false,method+' cannot mutate application workspaces through an extension page');
     assert.match(denied.error.message,/application daemon API/);
@@ -260,6 +260,32 @@ try {
   assert.ok(displayed.groups.every(group=>/1 session$/.test(group.stats)));
   assert.ok(displayed.height<450,'popup remains compact with two active workspaces');
   console.log('COMPACT WORKSPACE UI',JSON.stringify({groups:displayed.groups,height:displayed.height}));
+  // A hidden group is presentation-only: it remains a real Chrome group,
+  // daemon Session owner and application API resource.
+  const beforeHide = await rpc(workerSid,'workspace.status',{name:'Custom'});
+  const hidden = await request({op:'workspace-configure',name:'Custom',show_in_menu:false});
+  assert.equal(hidden.showInMenu,false);
+  assert.equal(hidden.groupId,beforeHide.groupId);
+  assert.deepEqual(hidden.leasedTabIds,beforeHide.leasedTabIds);
+  assert.equal((await rpc(workerSid,'workspace.list')).workspaces.find(w=>w.name==='Custom').showInMenu,false);
+  await waitFor(async()=>{
+    const state=await rpc(workerSid,'workspace.control.status');
+    return state.workspaces.length===1 && state.workspaces[0].name==='WebHelm' &&
+      state.totalSessions===2 && state.sessions.some(s=>s.session_id===custom.session_id);
+  },'Custom group hidden in popup yet session and capacity kept');
+  await waitFor(async()=>evaluate(popupSid,`[...document.querySelectorAll('.workspace-title strong')].every(x=>x.textContent!=='Custom')`),
+    'Custom hidden from extension menu');
+  const redisplayed = await request({op:'workspace-configure',name:'Custom',show_in_menu:true});
+  assert.equal(redisplayed.showInMenu,true);
+  await waitFor(async()=>evaluate(popupSid,`[...document.querySelectorAll('.workspace-title strong')].some(x=>x.textContent==='Custom')`),
+    'Custom restored in popup');
+  const hiddenCreated = await request({op:'workspace-create',name:'QuietGroup',pool_size:2,show_in_menu:false});
+  assert.equal(hiddenCreated.showInMenu,false);
+  assert.equal((await rpc(workerSid,'workspace.list')).workspaces.find(w=>w.name==='QuietGroup').showInMenu,false);
+  assert.equal((await rpc(workerSid,'workspace.control.status')).workspaces.some(w=>w.name==='QuietGroup'),false);
+  await request({op:'workspace-delete',name:'QuietGroup'});
+  console.log('WORKSPACE MENU VISIBILITY API PASS: Custom hidden/revealed with active Session; QuietGroup hidden at creation');
+
   // Keep Alive is attached to the site URL, not to a Session. The Session can
   // subsequently navigate away or stop without removing the registered site.
   const registeredOrigin='https://example.invalid';

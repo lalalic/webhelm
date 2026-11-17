@@ -208,6 +208,19 @@ export class WorkspaceManager {
     await this.saveConfig(config);
   }
 
+  async configure(name, {showInMenu} = {}) {
+    const normalizedName = normalizeWorkspaceName(name);
+    if (typeof showInMenu !== 'boolean') throw Error('showInMenu must be a boolean');
+    return this.workspaceLock(normalizedName).run(async () => {
+      const { config, entry } = await this.configuredWorkspace(normalizedName);
+      if (!entry) throw Error(`Workspace ${normalizedName} does not exist`);
+      config.workspaces[normalizedName] = {...entry, showInMenu};
+      await this.saveConfig(config);
+      // Visibility is presentation-only: never navigate, close or regroup tabs.
+      return this.status(normalizedName);
+    });
+  }
+
   async removeConfig(name) {
     const config = await this.loadConfig();
     delete config.workspaces[name];
@@ -506,11 +519,18 @@ export class WorkspaceManager {
     return await this.status(name);
   }
 
-  async ensureWorkspace(name, poolSize = null) {
+  async ensureWorkspace(name, poolSize = null, showInMenu = undefined) {
     const normalizedName = normalizeWorkspaceName(name);
     const { entry } = await this.configuredWorkspace(normalizedName);
     const wanted = normalizePoolSize(poolSize, entry?.poolSize ?? 8);
-    if (!entry || entry.poolSize !== wanted) await this.setPoolSize(normalizedName, wanted);
+    if (showInMenu !== undefined && typeof showInMenu !== 'boolean')
+      throw Error('showInMenu must be a boolean');
+    if (!entry || entry.poolSize !== wanted || (showInMenu !== undefined && entry.showInMenu !== showInMenu)) {
+      const {config} = await this.configuredWorkspace(normalizedName);
+      config.workspaces[normalizedName] = {...(entry || {}), poolSize:wanted,
+        ...(showInMenu === undefined ? {} : {showInMenu})};
+      await this.saveConfig(config);
+    }
 
     const group = await this.workspaceGroup(normalizedName);
     if (!group) return await this.createGroup(normalizedName, wanted);
@@ -545,6 +565,7 @@ export class WorkspaceManager {
         name: normalizedName,
         initialized: false,
         poolSize: entry.poolSize,
+        showInMenu: entry.showInMenu !== false,
         reason: "group-missing",
       };
     }
@@ -556,6 +577,7 @@ export class WorkspaceManager {
       initialized: true,
       groupId: group.id,
       poolSize: entry.poolSize,
+      showInMenu: entry.showInMenu !== false,
       maxCapacity: entry.poolSize,
       physicalTabs: tabs.length,
       idle: idle.length,
@@ -640,8 +662,8 @@ export class WorkspaceManager {
     );
   }
 
-  async create(name, poolSize = 8) {
-    return await this.ensureWorkspace(name, normalizePoolSize(poolSize));
+  async create(name, poolSize = 8, showInMenu = undefined) {
+    return await this.ensureWorkspace(name, normalizePoolSize(poolSize), showInMenu);
   }
 
   async resize(name, poolSize) {
@@ -833,7 +855,8 @@ export class WorkspaceManager {
   async rpc(request) {
     const method = String(request?.method || "");
     const args = request?.args || {};
-    if (method === "workspace.create") return await this.create(args.name, args.poolSize);
+    if (method === "workspace.create") return await this.create(args.name, args.poolSize, args.showInMenu);
+    if (method === "workspace.configure") return await this.configure(args.name, {showInMenu:args.showInMenu});
     if (method === "workspace.ensure") return await this.ensure(args.name, args.poolSize);
     if (method === "workspace.status") return await this.status(args.name);
     if (method === "workspace.list") return await this.list();

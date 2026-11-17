@@ -245,6 +245,45 @@ test("create is idempotent and resizes an existing workspace", async () => {
   assert.equal(resized.maxCapacity, 6);
 });
 
+test("showInMenu is persisted, defaults visible and never changes active tab ownership", async () => {
+  const chrome = fakeChrome();
+  const manager = new WorkspaceManager(chrome);
+  const original = await manager.create("WeChat", 3, false);
+  assert.equal(original.showInMenu, false);
+  assert.equal((await manager.list()).workspaces[0].showInMenu, false);
+  const lease = await manager.acquire("WeChat", "https://example.com/");
+  const before = await manager.status("WeChat");
+  assert.equal(before.leased, 1);
+  await manager.ensure("WeChat");
+  await manager.resize("WeChat", 4);
+  await manager.create("WeChat", 4); // no visibility option must preserve existing choice
+  const restarted = new WorkspaceManager(chrome);
+  await restarted.restoreConfiguredWorkspaces();
+  assert.equal((await restarted.status("WeChat")).showInMenu, false);
+  const revealed = await restarted.rpc({method:"workspace.configure",args:{name:"WeChat",showInMenu:true}});
+  assert.equal(revealed.showInMenu, true);
+  assert.equal(revealed.groupId, original.groupId);
+  assert.deepEqual(revealed.leasedTabIds,[lease.tabId]);
+  assert.equal((await restarted.list()).workspaces[0].showInMenu,true);
+  const hidden = await restarted.configure("WeChat",{showInMenu:false});
+  assert.equal(hidden.showInMenu,false);
+  assert.deepEqual(hidden.leasedTabIds,[lease.tabId]);
+  const visibleByDefault=await restarted.create("Relay",2);
+  assert.equal(visibleByDefault.showInMenu,true);
+});
+
+test("showInMenu rejects invalid values or missing workspaces without changing configuration",async()=>{
+  const chrome=fakeChrome();
+  const manager=new WorkspaceManager(chrome);
+  await manager.create("WeChat",3);
+  for(const invalid of [null,0,'false',{},[]]){
+    await assert.rejects(manager.configure("WeChat",{showInMenu:invalid}),/must be a boolean/);
+    await assert.rejects(manager.create("WeChat",3,invalid),/must be a boolean/);
+  }
+  await assert.rejects(manager.configure("No Such Group",{showInMenu:false}),/does not exist/);
+  assert.equal((await manager.status("WeChat")).showInMenu,true);
+});
+
 test("delete rejects leased tabs unless forced and removes persisted workspace", async () => {
   const chrome = fakeChrome();
   const manager = new WorkspaceManager(chrome);

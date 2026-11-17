@@ -22,7 +22,9 @@ export function createControlRpc({control, manager, summarizeWorkspaces, schedul
             } catch { return {...session, tabId:null}; }
           })),
         })));
-        return {...state,...summary,workspaces,keptSites:chromeApi.storage?.local ? await sitesWithStatus(chromeApi) : []};
+        return {...state,...summary,
+          workspaces:workspaces.filter(workspace => workspace.showInMenu !== false),
+          keptSites:chromeApi.storage?.local ? await sitesWithStatus(chromeApi) : []};
       }
       case "workspace.control.activateTab": {
         const state = await control.status();

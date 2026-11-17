@@ -3,6 +3,7 @@ export function summarizeWorkspaces(workspaces, sessions = []) {
   const configured = workspaces.map(workspace => ({
     name: workspace.name,
     initialized: Boolean(workspace.initialized),
+    showInMenu: workspace.showInMenu !== false,
     poolSize: Number.isInteger(workspace.poolSize) ? workspace.poolSize : null,
     idleTabs: workspace.initialized ? workspace.idle : null,
     leasedTabs: workspace.initialized ? workspace.leased : null,
@@ -17,7 +18,7 @@ export function summarizeWorkspaces(workspaces, sessions = []) {
     if (configuredNames.has(session.workspace)) continue;
     configuredNames.add(session.workspace);
     configured.push({
-      name: session.workspace, initialized: false, poolSize: null, idleTabs: null,
+      name: session.workspace, initialized: false, showInMenu: true, poolSize: null, idleTabs: null,
       leasedTabs: null, available: null, sessions: sessions.filter(s => s.workspace === session.workspace),
       reason: 'not-configured',
     });

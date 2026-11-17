@@ -89,7 +89,7 @@ globalThis.browserWorkspaceManagerRpc = async (request) => {
 // or restore Workspace identities. A browser Session on an extension page must
 // not gain management rights through chrome.runtime.sendMessage().
 const APPLICATION_ONLY_METHODS = new Set([
-  "workspace.create", "workspace.resize", "workspace.delete",
+  "workspace.create", "workspace.resize", "workspace.configure", "workspace.delete",
   "workspace.ensure", "workspace.migrateDefault",
   "workspace.acquire", "workspace.acquireIdentity",
   "workspace.release", "workspace.releaseAll",

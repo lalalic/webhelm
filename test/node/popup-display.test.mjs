@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {compactQueue,mergeKeptSites,readKeptSites,setStoredSite,SITE_STORAGE_KEY,SITE_STATUS_KEY} from '../../runtime/extension/popup-data.mjs';
+import {compactQueue,mergeKeptSites,readKeptSites,setStoredSite,menuWorkspaces,readMenuWorkspaces,WORKSPACE_STORAGE_KEY,SITE_STORAGE_KEY,SITE_STATUS_KEY} from '../../runtime/extension/popup-data.mjs';
 
 function fakeChrome(sites=[],states={}) {
   const local={[SITE_STORAGE_KEY]:sites};
@@ -59,4 +59,15 @@ test('queue preview limits many threads but preserves row actions when expanded'
   assert.equal(preview.hidden,14);
   assert.equal(compactQueue(items,{expanded:true}).visible.length,22);
   assert.equal(compactQueue([],{}).visible.length,0);
+});
+
+test('legacy running worker menu respects persisted hidden groups',async()=>{
+  const workspaces=[{name:'WeChat',showInMenu:true,sessions:[{session_id:'active'}]},
+    {name:'Relay',showInMenu:true},{name:'WebHelm',showInMenu:true}];
+  const config={workspaces:{WeChat:{poolSize:1,showInMenu:false},Relay:{poolSize:6},WebHelm:{poolSize:8}}};
+  const chrome={storage:{local:{get:async()=>({[WORKSPACE_STORAGE_KEY]:config})}}};
+  const result=await readMenuWorkspaces(chrome,workspaces);
+  assert.deepEqual(result.map(w=>w.name),['Relay','WebHelm']);
+  assert.equal(workspaces.length,3,'read operation must not modify daemon session list');
+  assert.deepEqual(menuWorkspaces([{name:'WeChat',showInMenu:false}],{}),[]);
 });

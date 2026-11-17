@@ -152,6 +152,24 @@ test('workspace summary aggregates multiple groups without hiding orphan session
   assert.equal(orphan.workspaces.at(-1).name,'Deleted');
 });
 
+test('hidden Workspaces remain in API totals but not popup group listing',async()=>{
+  const {channel}=build();
+  await channel.poll(sessions);
+  const groups=[
+    {name:'Harness',initialized:true,poolSize:8,idle:2,leased:3,showInMenu:true},
+    {name:'Other',initialized:true,poolSize:5,idle:1,leased:2,showInMenu:false},
+  ];
+  const chromeApi={storage:{session:{async get(){return {}}},local:{async get(){return {}}}}};
+  const rpc=createControlRpc({control:channel,chromeApi,
+    manager:{async list(){return {workspaces:groups}}},summarizeWorkspaces,scheduleBadge(){}});
+  const state=await rpc('workspace.control.status');
+  assert.equal(state.totalSessions,3,'hidden sessions still count in the daemon');
+  assert.equal(state.totalAvailable,8,'hidden capacity remains available');
+  assert.deepEqual(state.workspaces.map(w=>w.name),['Harness']);
+  assert.equal(state.sessions.length,3,'daemon ownership never filters hidden sessions');
+  assert.equal(summarizeWorkspaces(groups,sessions).workspaces.find(w=>w.name==='Other').showInMenu,false);
+});
+
 test('daemon heartbeat during cleanup retains state and does not consume pending action',async()=>{
   const {channel,advance}=build();
   await channel.poll(sessions);
