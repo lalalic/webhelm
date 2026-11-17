@@ -341,6 +341,28 @@ try {
     .then(row=>row.title==='Review this draft' && row.remove==='Remove'?row:null), 'queue title and remove');
   assert.equal(queueDisplayed.title,'Review this draft');
   assert.equal(queueDisplayed.heading,'ChatGPT Queue');
+  // A large real durable backlog must be compact by thread rather than
+  // obscuring the Keep Alive sites or encouraging bulk cancellation.
+  for(let i=0;i<12;i++) {
+    const queued=await request({op:'chatgpt-new-turn-enqueue',config:{
+      thread_id:'webhelm-e2e-same-thread-backlog',message:`Pending turn ${i}`,
+      idempotency_key:`webhelm-e2e-pending-${i}`,
+    }});
+    assert.equal(queued.ok,true);
+  }
+  const folded=await waitFor(async()=>evaluate(popupSid,`(()=>({
+    total:document.querySelector('#queue-count')?.textContent,
+    rows:document.querySelectorAll('.queue-row').length,
+    toggle:document.querySelector('#queue-toggle')?.textContent,
+    kept:document.querySelectorAll('.keepalive-row').length,
+  }))()` ).then(x=>x.total?.includes('13 pending')&&x.rows===2?x:null), 'compact long queue by distinct thread');
+  assert.match(folded.toggle,/Show all 13/);
+  assert.equal(folded.kept,1,'folding backlog preserves Keep Alive display');
+  await evaluate(popupSid,`document.querySelector('#queue-toggle').click()`);
+  await waitFor(async()=>evaluate(popupSid,'document.querySelectorAll(".queue-row").length===13'), 'expand whole queue');
+  await evaluate(popupSid,`document.querySelector('#queue-toggle').click()`);
+  await waitFor(async()=>evaluate(popupSid,'document.querySelectorAll(".queue-row").length===2'), 'refold queue');
+  console.log('QUEUE FOLD / EXPAND PASS: 13 pending turns, 2 thread heads');
   await evaluate(popupSid,'globalThis.__queueTitleNode=document.querySelector(".queue-title")');
   await mouseClick(popupSid,'.queue-title');
   assert.equal(await evaluate(popupSid,'document.querySelector(".queue-title")===globalThis.__queueTitleNode'),true,

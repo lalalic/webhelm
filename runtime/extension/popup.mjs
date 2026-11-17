@@ -1,3 +1,4 @@
+import {readKeptSites, setStoredSite, compactQueue} from './popup-data.mjs';
 const el = id => document.getElementById(id);
 let confirming = false;
 let chosen = null;
@@ -6,6 +7,11 @@ let lastQueueSignature = '';
 let lastSiteSignature = '';
 let currentSites = [];
 let refreshRunning = false;
+let canControlSites = false;
+let queueExpanded = false;
+let currentQueue = [];
+let queueBusy = false;
+let queueConnected = false;
 const queueRows = new Map();
 const queueGroups = new Map();
 
@@ -63,14 +69,19 @@ function renderKeptSites(sites, busy, connected) {
     status.title=statusText;
     status.setAttribute('aria-hidden','true');
     const name=actionButton(new URL(site.url).hostname,false,async()=>{
-      try {await rpc('workspace.control.site.open',{siteId:site.id});}
-      catch(error){el('message').textContent=error.message;}
+      try {
+        if (canControlSites) await rpc('workspace.control.site.open',{siteId:site.id});
+        else await chrome.tabs.create({url:site.url,active:true});
+      } catch(error){el('message').textContent=error.message;}
     },`tab-title keepalive-name ${loggedIn?'is-logged-in':''}`);
     name.title=`${statusText} · Click to open site`;
     name.setAttribute('aria-label',`${new URL(site.url).hostname}: ${statusText}. Open site`);
     const remove=actionButton('×',false,async()=>{
-      try {await rpc('workspace.control.site.remove',{siteId:site.id});lastSignature='';refresh();}
-      catch(error){el('message').textContent=error.message;}
+      try {
+        if (canControlSites) await rpc('workspace.control.site.remove',{siteId:site.id});
+        else await setStoredSite(chrome,site.url,false);
+        lastSiteSignature='';lastSignature='';refresh();
+      } catch(error){el('message').textContent=error.message;}
     },'keepalive-remove');
     remove.title=`Remove ${new URL(site.url).hostname} from Keep Alive`;
     remove.setAttribute('aria-label',remove.title);
@@ -82,7 +93,7 @@ function renderKeptSites(sites, busy, connected) {
 function renderWorkspaces(workspaces, busy, connected) {
   const signature = JSON.stringify(workspaces.map(w => [
     w.name,w.initialized,w.available,w.poolSize,w.idleTabs,w.leasedTabs,w.sessions.map(s => [s.session_id,s.tab_title,s.tabId,s.tab_url]),
-  ])) + ':' + JSON.stringify(currentSites.map(site=>site.id)) + ':' + busy + ':' + connected;
+  ])) + ':' + JSON.stringify(currentSites.map(site=>site.id)) + ':' + canControlSites + ':' + busy + ':' + connected;
   if (signature === lastSignature) return;
   lastSignature = signature;
   const target = el('workspace-list');
@@ -121,12 +132,14 @@ function renderWorkspaces(workspaces, busy, connected) {
       sessionRow.append(details);
       if (workspace.name === 'WebHelm' && siteId) {
         const enabled=currentSites.some(site=>site.id===siteId);
-        sessionRow.append(actionButton(enabled?'On':'Keep Alive',busy||!connected,async()=>{
+        const toggle=actionButton(enabled?'On':'Keep Alive',busy||!connected||!canControlSites,async()=>{
           try {
             await rpc('workspace.control.site.toggle',{sessionId:session.session_id,enabled:!enabled});
             lastSignature='';refresh();
           } catch(error){el('message').textContent=error.message;}
-        },enabled?'site-enabled':''));
+        },enabled?'site-enabled':'');
+        if(!canControlSites) toggle.title='Update the running WebHelm daemon to manage Keep Alive sites';
+        sessionRow.append(toggle);
       }
       sessionRow.append(actionButton('Stop', busy || !connected,
         () => showConfirmation('stop', {sessionId:session.session_id})));
@@ -137,72 +150,92 @@ function renderWorkspaces(workspaces, busy, connected) {
 }
 
 function renderQueue(items, busy, connected) {
-  const signature=JSON.stringify(items.map(item=>[item.id,item.platform,item.title,item.url,item.state,item.attempts]))+`:${busy}:${connected}`;
+  if(!items.length)queueExpanded=false;
+  const view=compactQueue(items,{expanded:queueExpanded,maxHeads:8});
+  const shown=view.visible;
+  const signature=JSON.stringify({shown:shown.map(item=>[item.id,item.platform,item.thread_id,item.title,item.url,item.state,item.attempts]),
+    total:view.total,threads:view.threads,hidden:view.hidden,uncertain:view.uncertain,blocked:view.blocked,
+    behind:[...view.behind],busy,connected,queueExpanded});
   if (signature===lastQueueSignature) return;
   lastQueueSignature=signature;
+  const count=el('queue-count');
+  count.textContent=view.total ? `${view.total} pending · ${view.threads} thread${view.threads===1?'':'s'}` : 'Empty';
+  const toggle=el('queue-toggle');
+  toggle.hidden=!(queueExpanded || view.hidden>0);
+  toggle.textContent=queueExpanded?'Show less':`Show all ${view.total}`;
+  toggle.setAttribute('aria-expanded',String(queueExpanded));
+  const note=el('queue-note');
+  note.hidden=!view.uncertain && !view.blocked;
+  if(!note.hidden) note.textContent=[
+    view.uncertain ? `${view.uncertain} uncertain` : '',
+    view.blocked ? `${view.blocked} blocked` : '',
+  ].filter(Boolean).join(' · ') + ' — verify before retrying; later turns in the same thread may be waiting.';
+
   const target=el('queue-list');
-  const grouped = new Map();
-  for (const item of items) {
-    const platform = String(item.platform || 'Queue');
-    if (!grouped.has(platform)) grouped.set(platform, []);
+  const grouped=new Map();
+  for (const item of shown) {
+    const platform=String(item.platform||'Queue');
+    if(!grouped.has(platform)) grouped.set(platform,[]);
     grouped.get(platform).push(item);
   }
-  const activeGroupKeys = new Set(grouped.keys());
-  const activeRowKeys = new Set(items.map(item => `${item.platform || 'Queue'}:${item.id}`));
-  for (const [key, group] of queueGroups) if (!activeGroupKeys.has(key)) {
-    group.remove(); queueGroups.delete(key);
+  const activeGroupKeys=new Set(grouped.keys());
+  const activeRowKeys=new Set(shown.map(item=>`${item.platform||'Queue'}:${item.id}`));
+  for (const [key, group] of queueGroups) if(!activeGroupKeys.has(key)) {
+    group.remove();queueGroups.delete(key);
   }
-  for (const [key, row] of queueRows) if (!activeRowKeys.has(key)) {
-    row.remove(); queueRows.delete(key);
+  for (const [key, row] of queueRows) if(!activeRowKeys.has(key)) {
+    row.remove();queueRows.delete(key);
   }
-  if (!items.length) {
-    target.replaceChildren();
-    const empty=document.createElement('div'); empty.className='empty-queue'; empty.textContent='No queue entries';
+  if(!items.length) {
+    target.replaceChildren();queueGroups.clear();queueRows.clear();
+    const empty=document.createElement('div');empty.className='empty-queue';empty.textContent='No queue entries';
     target.append(empty);
     return;
   }
   target.querySelector('.empty-queue')?.remove();
-  for (const [platform, entries] of grouped) {
-    let group = queueGroups.get(platform);
-    if (!group) {
-      group = document.createElement('section'); group.className='queue-platform';
-      const heading = document.createElement('strong'); heading.className='queue-platform-title';
+  for (const [platform,entries] of grouped) {
+    let group=queueGroups.get(platform);
+    if(!group) {
+      group=document.createElement('section');group.className='queue-platform';
+      const heading=document.createElement('strong');heading.className='queue-platform-title';
       heading.textContent=platform==='Queue'?'Queue':`${platform} Queue`;
-      const rows = document.createElement('div'); rows.className='queue-platform-rows';
-      group.append(heading, rows); queueGroups.set(platform, group); target.append(group);
+      const rows=document.createElement('div');rows.className='queue-platform-rows';
+      group.append(heading,rows);queueGroups.set(platform,group);target.append(group);
     }
     for (const item of entries) {
-      const key = `${platform}:${item.id}`;
-      let row = queueRows.get(key);
-      if (!row) {
-        row=document.createElement('div'); row.className='queue-row';
-        const info=document.createElement('div'); info.className='queue-info';
-        const title=actionButton('', false, async()=>{
-          try { await rpc('workspace.control.openQueue',{queueId:item.id}); el('message').textContent='Queue destination opened.'; }
-          catch(error) { el('message').textContent=error.message; }
-        }, 'queue-title');
-        const detail=document.createElement('span'); detail.className='queue-detail';
-        const remove=actionButton('Remove', false, async()=>{
-          try { const result=await rpc('workspace.control.queueCancel',{queueId:item.id}); if(!result.id) throw new Error('Missing queue request ID'); el('message').textContent='Waiting for WebHelm daemon…'; }
-          catch(error) { el('message').textContent=error.message; }
+      const key=`${platform}:${item.id}`;
+      let row=queueRows.get(key);
+      if(!row) {
+        row=document.createElement('div');row.className='queue-row';
+        const info=document.createElement('div');info.className='queue-info';
+        const title=actionButton('',false,async()=>{
+          try {await rpc('workspace.control.openQueue',{queueId:item.id});el('message').textContent='Queue destination opened.';}
+          catch(error){el('message').textContent=error.message;}
+        },'queue-title');
+        const detail=document.createElement('span');detail.className='queue-detail';
+        const remove=actionButton('Remove',false,async()=>{
+          try {const result=await rpc('workspace.control.queueCancel',{queueId:item.id});if(!result.id)throw Error('Missing queue request ID');el('message').textContent='Waiting for WebHelm daemon…';}
+          catch(error){el('message').textContent=error.message;}
           refresh();
         });
-        row.append(info, remove); info.append(title, detail);
-        queueRows.set(key,row);
+        row.append(info,remove);info.append(title,detail);queueRows.set(key,row);
       }
       const title=row.querySelector('.queue-title');
-      title.textContent=item.title || `${platform} message`;
-      title.title=item.title || `${platform} message`;
-      title.disabled=!connected || !item.url;
-      row.querySelector('.queue-detail').textContent=`${item.state.toLowerCase()} · ${item.attempts} attempt${item.attempts===1?'':'s'}`;
+      title.textContent=item.title||`${platform} message`;
+      title.title=item.title||`${platform} message`;
+      title.disabled=!connected||!item.url;
+      const attempts=Number(item.attempts)||0;
+      const more=!queueExpanded ? (view.behind.get(item.id)||0) : 0;
+      row.querySelector('.queue-detail').textContent=`${String(item.state||'queued').toLowerCase()} · ${attempts} attempt${attempts===1?'':'s'}`+
+        (more ? ` · ${more} more in this thread` : '');
       const remove=row.querySelector('button:last-child');
       const safe=['QUEUED','WAITING','BLOCKED','UNCERTAIN'].includes(item.state);
-      remove.disabled=!safe || busy || !connected;
+      remove.disabled=!safe||busy||!connected;
       remove.title=safe?'':'Cannot remove a running or completed submission';
       const rows=group.querySelector('.queue-platform-rows');
-      if (row.parentElement!==rows) rows.append(row);
+      if(row.parentElement!==rows)rows.append(row);
     }
-    if (group.parentElement!==target) target.append(group);
+    if(group.parentElement!==target)target.append(group);
   }
 }
 
@@ -214,10 +247,13 @@ async function refresh() {
     el('daemon-status').textContent = state.connected ? 'Online' : 'Offline';
     el('daemon-status').className = `daemon-state ${state.connected ? 'online' : 'offline'}`;
     const busy = Boolean(state.request);
-    currentSites=state.keptSites || [];
+    canControlSites=Array.isArray(state.keptSites);
+    currentSites=await readKeptSites(chrome,state.keptSites);
     renderKeptSites(currentSites,busy,state.connected);
-    renderWorkspaces(state.workspaces || [], busy, state.connected);
-    renderQueue(state.queue || [], busy, state.connected);
+    renderWorkspaces(state.workspaces || [],busy,state.connected);
+    currentQueue=state.queue||[];
+    queueBusy=busy;queueConnected=state.connected;
+    renderQueue(currentQueue,busy,state.connected);
     el('confirm').disabled = !state.connected || busy;
     if (busy) {
       el('message').textContent = 'Applying WebHelm action…';
@@ -235,6 +271,12 @@ async function refresh() {
     refreshRunning = false;
   }
 }
+
+el('queue-toggle').addEventListener('click',()=>{
+  queueExpanded=!queueExpanded;
+  lastQueueSignature='';
+  renderQueue(currentQueue,queueBusy,queueConnected);
+});
 
 el('cancel').addEventListener('click', () => {
   confirming = false;
