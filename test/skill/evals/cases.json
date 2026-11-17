@@ -97,7 +97,7 @@
       "webhelm status"
     ],
     "forbiddenCommands": [
-      "webhelm migrate"
+      "webhelm session stop --all"
     ],
     "requiresAuthorization": false
   },
@@ -109,7 +109,6 @@
       "webhelm ensure"
     ],
     "forbiddenCommands": [
-      "webhelm migrate",
       "webhelm session stop --all"
     ],
     "requiresAuthorization": false

@@ -14,7 +14,7 @@ import { stopMatchingSessions } from './session-control.mjs';
 import { ensureManagedChrome } from './chrome.mjs';
 import { ensureExtensionLoaded } from './extension-manager.mjs';
 import { createManagedChromeGuard } from './managed-chrome-guard.mjs';
-import { PROFILE_DIR, RUNTIME_DIR, requireMigratedConfig } from './config-paths.mjs';
+import { PROFILE_DIR, RUNTIME_DIR, assertProfileConsistency } from './config-paths.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PACKAGE_VERSION=JSON.parse(fs.readFileSync(new URL('../package.json',import.meta.url),'utf8')).version;
@@ -808,6 +808,6 @@ async function request(payload,ensure=true){
     conn.on('error',error=>finish(error));
   });
 }
-export async function ensureDaemon(){try{const p=await request({op:'ping'},false);if(p.ok)return p}catch{}if(!process.env.WEBHELM_CDP_URL)requireMigratedConfig();fs.mkdirSync(RUNTIME,{recursive:true,mode:0o700});if(fs.existsSync(LOCK)){let owner=0;try{owner=Number(fs.readFileSync(LOCK,'utf8').trim())}catch{};let alive=false;if(owner>0)try{process.kill(owner,0);alive=true}catch{};if(alive)throw Error(`daemon owner lock exists but socket is unreachable; refusing duplicate startup (${LOCK})`);fs.unlinkSync(LOCK)}const child=await import('node:child_process');const log=fs.openSync(path.join(RUNTIME,'session-node.log'),'a');child.spawn(process.execPath,[fileURLToPath(import.meta.url),'daemon'],{detached:true,stdio:['ignore',log,log],env:process.env}).unref();for(let i=0;i<100;i++){await delay(100);try{const p=await request({op:'ping'},false);if(p.ok)return p}catch{}}throw Error(`WebHelm Node daemon did not start; see ${path.join(RUNTIME,'session-node.log')}`)}
+export async function ensureDaemon(){try{const p=await request({op:'ping'},false);if(p.ok)return p}catch{}if(!process.env.WEBHELM_CDP_URL)assertProfileConsistency();fs.mkdirSync(RUNTIME,{recursive:true,mode:0o700});if(fs.existsSync(LOCK)){let owner=0;try{owner=Number(fs.readFileSync(LOCK,'utf8').trim())}catch{};let alive=false;if(owner>0)try{process.kill(owner,0);alive=true}catch{};if(alive)throw Error(`daemon owner lock exists but socket is unreachable; refusing duplicate startup (${LOCK})`);fs.unlinkSync(LOCK)}const child=await import('node:child_process');const log=fs.openSync(path.join(RUNTIME,'session-node.log'),'a');child.spawn(process.execPath,[fileURLToPath(import.meta.url),'daemon'],{detached:true,stdio:['ignore',log,log],env:process.env}).unref();for(let i=0;i<100;i++){await delay(100);try{const p=await request({op:'ping'},false);if(p.ok)return p}catch{}}throw Error(`WebHelm Node daemon did not start; see ${path.join(RUNTIME,'session-node.log')}`)}
 if(process.argv[2]==='daemon')main().catch(e=>{console.error(e);process.exit(1)});
 export {request,SOCKET,RUNTIME};

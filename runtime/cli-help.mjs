@@ -25,7 +25,6 @@ Commands:
   webhelm platform run NAME ACTION [...]  Execute an installed site Action
   webhelm platform sync                   Update installed site Actions
   webhelm platform publish --message MSG  Publish reviewed site Action changes
-  webhelm migrate                         Migrate supported legacy local browser data
   webhelm help [command [subcommand]]     Show command help
 Options:
   -h, --help                       Show help without running the command
@@ -87,17 +86,6 @@ Output: JSON capacity information.
 
 Example:
   webhelm capacity`,
-  migrate: `webhelm migrate — migrate supported legacy local browser data
-
-Usage:
-  webhelm migrate
-
-Run only after stopping the legacy daemon and browser and draining Sessions.
-Preserves the signed-in browser profile and supported local state.
-Output: JSON with migration results.
-
-Example:
-  webhelm migrate`,
   session: `webhelm session — manage persistent JavaScript browser Sessions
 
 Usage:

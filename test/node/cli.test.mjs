@@ -74,9 +74,20 @@ test('CLI explicitly rejects --workspace and does not expose Workspace provision
   assert.match(forbidden.stderr,/unknown command:/);
 });
 
+test('retired migrate CLI is unavailable and absent from help',()=>{
+  const help=run('--help');
+  assert.equal(help.status,0,help.stderr);
+  assert.doesNotMatch(help.stdout,/webhelm migrate/);
+  for(const args of [['migrate'],['help','migrate'],['migrate','--help']]){
+    const result=run(...args);
+    assert.equal(result.status,1,args.join(' '));
+    assert.match(result.stderr,/unknown (command|help topic):/);
+  }
+});
+
 test('every supported CLI command has detailed side-effect-free help',()=>{
   const topics = [
-    'help','setup','status','ensure','capacity','migrate','session','session start',
+    'help','setup','status','ensure','capacity','session','session start',
     'session list','session exec','session heartbeat','session stop','platform',
     'platform list','platform profile','platform source','platform run',
     'platform sync','platform publish',

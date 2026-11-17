@@ -7,7 +7,6 @@ import { randomUUID } from 'node:crypto';
 import { ensureDaemon, request, SOCKET } from './node-daemon.mjs';
 import { PLATFORMS, listPlatforms, platformProfile, actionPath, validateConfig } from './platforms.mjs';
 import { ACTIONS_DIR, ensureActions, syncActions, publishActions } from './actions-repo.mjs';
-import { migrateConfig, migrateChromeProfile } from './migrate.mjs';
 import { installLoginGuard, stageRuntimeForLoginGuard } from './login-guard.mjs';
 import { cliHelp } from './cli-help.mjs';
 
@@ -105,12 +104,6 @@ async function main(args = process.argv.slice(2)) {
     return console.log(cliHelp(topics));
   }
   rejectWorkspaceOverride(args);
-  if (group === 'migrate') {
-    await ensureActions(); // ~/.local/webhelm is the Actions Git checkout, never create an empty replacement.
-    const legacy=await migrateConfig();
-    const chrome=await migrateChromeProfile();
-    return emit({legacy,chrome});
-  }
   if (group === 'setup') {
     const repo=await ensureActions();
     const chrome=await ensureDaemon();

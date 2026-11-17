@@ -3,7 +3,7 @@ import path from 'node:path';
 import net from 'node:net';
 import { spawn, execFileSync } from 'node:child_process';
 
-import { CONFIG_ROOT, PROFILE_DIR, OLD_PROFILE_DIR, requireMigratedConfig } from './config-paths.mjs';
+import { CONFIG_ROOT, PROFILE_DIR, OLD_PROFILE_DIR, assertProfileConsistency } from './config-paths.mjs';
 import { stageExtension } from './extension-manager.mjs';
 const ROOT = CONFIG_ROOT;
 const PROFILE = PROFILE_DIR;
@@ -122,7 +122,7 @@ export async function ensureManagedChrome(){
   // Explicit CDP endpoints also support hermetic mock-browser tests.
   const specified=process.env.WEBHELM_CDP_URL;
   if (specified) return {mode:'override',reused:true,endpoint:specified,profile_dir:PROFILE};
-  requireMigratedConfig();
+  assertProfileConsistency();
   return lockOwnership(async()=>{
     const existing=await fromState()||await discover();
     if(existing)return {...existing, mode:'managed',reused:true,endpoint:`http://127.0.0.1:${existing.port}`};
