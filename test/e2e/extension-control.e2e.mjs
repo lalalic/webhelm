@@ -9,6 +9,7 @@ import {setTimeout as sleep} from 'node:timers/promises';
 import {stageExtension,EXTENSION_ID} from '../../runtime/extension-manager.mjs';
 
 const repo=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..');
+const RUNTIME_VERSION=JSON.parse(fs.readFileSync(path.join(repo,'package.json'),'utf8')).version;
 const root=fs.mkdtempSync(path.join(os.tmpdir(),'webhelm-rename-e2e-'));
 const browserLog=fs.openSync(path.join(root,'browser.log'),'a');
 const daemonLog=fs.openSync(path.join(root,'daemon.log'),'a');
@@ -241,6 +242,8 @@ try {
     const v=await evaluate(popupSid,`({
       text:document.body.innerText,
       daemon:document.querySelector('#daemon-status')?.textContent,
+      shownVersion:document.querySelector('#extension-version')?.textContent,
+      manifestVersion:chrome.runtime.getManifest().version,
       duplicateTitle:!!document.querySelector('header h1'),
       groups:[...document.querySelectorAll('.workspace-row')].map(row=>({
         label:row.querySelector('.workspace-title strong')?.textContent,
@@ -253,6 +256,8 @@ try {
     })`);
     return v?.daemon==='Online' && v.groups.length===2?v:null;
   },'two-group popup');
+  assert.equal(displayed.shownVersion,`v${RUNTIME_VERSION}`,'popup must show the published Runtime version');
+  assert.equal(displayed.manifestVersion,RUNTIME_VERSION,'Extension must match the published Runtime version');
   assert.equal(displayed.duplicateTitle,false,'the workspace name appears only in its own row');
   assert.equal(displayed.hasGlobalStop,false);
   assert.equal(displayed.hasTotals,false);

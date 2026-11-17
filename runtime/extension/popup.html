@@ -8,7 +8,8 @@
     :root { color-scheme: light dark; --ink:#182234; --muted:#5f6d81; --border:#e1e7f0; --accent:#345fd5; --accent-light:#edf2ff; --warning:#ae3849; }
     * { box-sizing: border-box; }
     body { width:320px; margin:0; padding:12px 14px; background:light-dark(#fff,#172131); color:light-dark(var(--ink),#edf2f9); font:12px/1.4 system-ui,sans-serif; }
-    .panel-heading { display:flex; align-items:center; justify-content:flex-end; margin-bottom:3px; }
+    .panel-heading { display:flex; align-items:center; justify-content:space-between; margin-bottom:3px; }
+    .extension-version { font-size:11px; font-variant-numeric:tabular-nums; color:light-dark(var(--muted),#acb8c9); }
     .daemon-state { font-size:11px; color:light-dark(var(--muted),#acb8c9); white-space:nowrap; }
     .daemon-state::before { content:""; display:inline-block; vertical-align:middle; width:6px; height:6px; border-radius:50%; background:#8893a1; margin-right:5px; }
     .daemon-state.online::before { background:#23915c; }
@@ -68,6 +69,7 @@
 </head>
 <body>
   <header class="panel-heading">
+    <span id="extension-version" class="extension-version" aria-label="WebHelm version"></span>
     <span id="daemon-status" class="daemon-state" role="status">Connecting…</span>
   </header>
   <strong>Keep Alive Sites</strong>

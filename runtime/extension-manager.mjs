@@ -7,6 +7,7 @@ import {LOCAL_ROOT} from './config-paths.mjs';
 
 export const EXTENSION_ID='kkkpgmhpoeceojalkpfdidffdfnlgdog';
 const SOURCE=fileURLToPath(new URL('./extension/',import.meta.url));
+const RUNTIME_VERSION=JSON.parse(fs.readFileSync(new URL('../package.json',import.meta.url),'utf8')).version;
 const SOURCE_MODE=process.env.WEBHELM_SOURCE_MODE==='1';
 export const EXTENSION_HOME=path.resolve(process.env.WEBHELM_EXTENSION_HOME ||
   (SOURCE_MODE ? SOURCE : path.join(LOCAL_ROOT,'extension')));
@@ -25,6 +26,8 @@ function manifest(dir){
   return data;
 }
 export const extensionVersion=manifest(SOURCE).version;
+if(extensionVersion!==RUNTIME_VERSION)
+  throw Error(`Bundled WebHelm version mismatch: Runtime ${RUNTIME_VERSION}, Extension ${extensionVersion}`);
 function canonicalPath(value) {
   try { return fs.realpathSync(value || ''); }
   catch { return path.resolve(value || ''); }

@@ -1,6 +1,6 @@
 {
   "name": "webhelm",
-  "version": "1.0.1",
+  "version": "1.0.35",
   "description": "Agent browser automation in a visible managed Chrome with persistent JavaScript sessions",
   "type": "module",
   "bin": {

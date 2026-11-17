@@ -1,5 +1,6 @@
 import {readKeptSites, setStoredSite, compactQueue, readMenuWorkspaces} from './popup-data.mjs';
 const el = id => document.getElementById(id);
+el('extension-version').textContent = `v${chrome.runtime.getManifest().version}`;
 let confirming = false;
 let chosen = null;
 let lastSignature = '';
