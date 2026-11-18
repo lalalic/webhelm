@@ -150,6 +150,14 @@ function renderWorkspaces(workspaces, busy, connected) {
   }
 }
 
+const queueToggle=actionButton('Show all',false,()=>{
+  queueExpanded=!queueExpanded;
+  lastQueueSignature='';
+  renderQueue(currentQueue,queueBusy,queueConnected);
+});
+queueToggle.id='queue-toggle';
+queueToggle.setAttribute('aria-controls','queue-list');
+
 function renderQueue(items, busy, connected) {
   if(!items.length)queueExpanded=false;
   const view=compactQueue(items,{expanded:queueExpanded,maxHeads:8});
@@ -159,20 +167,11 @@ function renderQueue(items, busy, connected) {
     behind:[...view.behind],busy,connected,queueExpanded});
   if (signature===lastQueueSignature) return;
   lastQueueSignature=signature;
-  const count=el('queue-count');
-  count.textContent=view.total ? `${view.total} pending · ${view.threads} thread${view.threads===1?'':'s'}` : 'Empty';
-  const toggle=el('queue-toggle');
-  toggle.hidden=!(queueExpanded || view.hidden>0);
-  toggle.textContent=queueExpanded?'Show less':`Show all ${view.total}`;
-  toggle.setAttribute('aria-expanded',String(queueExpanded));
-  const note=el('queue-note');
-  note.hidden=!view.uncertain && !view.blocked;
-  if(!note.hidden) note.textContent=[
-    view.uncertain ? `${view.uncertain} uncertain` : '',
-    view.blocked ? `${view.blocked} blocked` : '',
-  ].filter(Boolean).join(' · ') + ' — verify before retrying; later turns in the same thread may be waiting.';
-
   const target=el('queue-list');
+  target.hidden=!items.length;
+  queueToggle.hidden=!(queueExpanded || view.hidden>0);
+  queueToggle.textContent=queueExpanded?'Show less':'Show all '+view.total;
+  queueToggle.setAttribute('aria-expanded',String(queueExpanded));
   const grouped=new Map();
   for (const item of shown) {
     const platform=String(item.platform||'Queue');
@@ -189,20 +188,20 @@ function renderQueue(items, busy, connected) {
   }
   if(!items.length) {
     target.replaceChildren();queueGroups.clear();queueRows.clear();
-    const empty=document.createElement('div');empty.className='empty-queue';empty.textContent='No queue entries';
-    target.append(empty);
     return;
   }
-  target.querySelector('.empty-queue')?.remove();
   for (const [platform,entries] of grouped) {
     let group=queueGroups.get(platform);
     if(!group) {
       group=document.createElement('section');group.className='queue-platform';
+      const header=document.createElement('div');header.className='queue-platform-header';
       const heading=document.createElement('strong');heading.className='queue-platform-title';
       heading.textContent=platform==='Queue'?'Queue':`${platform} Queue`;
       const rows=document.createElement('div');rows.className='queue-platform-rows';
-      group.append(heading,rows);queueGroups.set(platform,group);target.append(group);
+      header.append(heading);
+      group.append(header,rows);queueGroups.set(platform,group);target.append(group);
     }
+    if(platform===grouped.keys().next().value)group.querySelector('.queue-platform-header').append(queueToggle);
     for (const item of entries) {
       const key=`${platform}:${item.id}`;
       let row=queueRows.get(key);
@@ -214,11 +213,11 @@ function renderQueue(items, busy, connected) {
           catch(error){el('message').textContent=error.message;}
         },'queue-title');
         const detail=document.createElement('span');detail.className='queue-detail';
-        const remove=actionButton('Remove',false,async()=>{
+        const remove=actionButton('×',false,async()=>{
           try {const result=await rpc('workspace.control.queueCancel',{queueId:item.id});if(!result.id)throw Error('Missing queue request ID');el('message').textContent='Waiting for WebHelm daemon…';}
           catch(error){el('message').textContent=error.message;}
           refresh();
-        });
+        },'queue-remove');
         row.append(info,remove);info.append(title,detail);queueRows.set(key,row);
       }
       const title=row.querySelector('.queue-title');
@@ -232,7 +231,10 @@ function renderQueue(items, busy, connected) {
       const remove=row.querySelector('button:last-child');
       const safe=['QUEUED','WAITING','BLOCKED','UNCERTAIN'].includes(item.state);
       remove.disabled=!safe||busy||!connected;
-      remove.title=safe?'':'Cannot remove a running or completed submission';
+      remove.title=safe?'Remove '+title.textContent+' from queue':'Cannot remove a running or completed submission';
+      remove.setAttribute('aria-label',remove.title);
+      row.querySelector('.queue-detail').title=['UNCERTAIN','BLOCKED'].includes(item.state)
+        ? 'Verify the submission before retrying; later turns in the thread may be waiting.' : '';
       const rows=group.querySelector('.queue-platform-rows');
       if(row.parentElement!==rows)rows.append(row);
     }
@@ -272,12 +274,6 @@ async function refresh() {
     refreshRunning = false;
   }
 }
-
-el('queue-toggle').addEventListener('click',()=>{
-  queueExpanded=!queueExpanded;
-  lastQueueSignature='';
-  renderQueue(currentQueue,queueBusy,queueConnected);
-});
 
 el('cancel').addEventListener('click', () => {
   confirming = false;

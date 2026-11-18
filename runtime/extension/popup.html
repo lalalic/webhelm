@@ -42,20 +42,18 @@
     .keepalive-row .keepalive-name.is-logged-in { color:#23915c; }
     .keepalive-row .keepalive-remove { flex:0 0 19px; width:19px; padding:1px; border:0; background:transparent; color:light-dark(var(--muted),#acb8c9); font-size:16px; font-weight:400; line-height:18px; }
     .session-row button.site-enabled { color:#23915c; }
-    #queue-list { border-top:1px solid light-dark(var(--border),#334155); padding-top:6px; margin-top:2px; max-height:240px; }
-    #queue-heading { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-top:8px; }
-    #queue-heading strong { font-size:12px; }
-    #queue-count { color:light-dark(var(--muted),#acb8c9); font-size:11px; font-weight:400; }
-    #queue-toggle { width:auto; flex-shrink:0; padding:3px 6px; font-size:11px; }
-    #queue-note { color:light-dark(var(--muted),#acb8c9); font-size:11px; padding:5px 0; }
-    .queue-platform { padding:5px 0; }
+    #queue-list { border-top:1px solid light-dark(var(--border),#334155); margin-top:6px; padding-top:4px; max-height:240px; }
+    .queue-platform { padding:3px 0; }
     .queue-platform + .queue-platform { border-top:1px solid light-dark(var(--border),#334155); }
-    .queue-platform-title { font-size:12px; }
-    .queue-row { display:flex; align-items:center; gap:8px; padding:5px 0; }
+    .queue-platform-header { display:flex; align-items:center; justify-content:space-between; gap:6px; }
+    .queue-platform-title { font-size:11px; }
+    #queue-toggle { width:auto; padding:2px 5px; font-size:9px; }
+    .queue-row { display:flex; align-items:center; gap:6px; padding:3px 0; }
     .queue-info { min-width:0; flex:1; overflow-wrap:anywhere; }
-    .queue-info span { display:block; color:light-dark(var(--muted),#acb8c9); font-size:11px; }
-    .queue-row button { width:auto; padding:5px 9px; font-size:11px; }
+    .queue-info span { display:block; color:light-dark(var(--muted),#acb8c9); font-size:9px; line-height:1.3; }
+    .queue-row button.queue-remove { flex:0 0 20px; width:20px; height:20px; padding:0; border:0; background:transparent; color:light-dark(var(--muted),#acb8c9); font-size:16px; font-weight:400; line-height:18px; }
     button.tab-title, button.queue-title { flex:1; min-width:0; width:100%; padding:0; border:0; border-radius:2px; background:transparent; color:inherit; text-align:left; font-size:12px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; }
+    button.queue-title { font-size:10px; }
     button.tab-title:hover, button.queue-title:hover { text-decoration:underline; }
     button.tab-title:disabled, button.queue-title:disabled { cursor:default; text-decoration:none; }
     .session-info, .queue-info { overflow:hidden; }
@@ -75,9 +73,7 @@
   <strong>Keep Alive Sites</strong>
   <div id="keepalive-list" aria-label="Keep Alive Sites">Loading…</div>
   <div id="workspace-list" class="session-list" aria-label="Workspaces" aria-live="polite">Connecting…</div>
-  <div id="queue-heading"><strong>Queue <span id="queue-count"></span></strong><button id="queue-toggle" type="button" aria-controls="queue-list" aria-expanded="false" hidden>Show all</button></div>
-  <div id="queue-note" role="status" hidden></div>
-  <div id="queue-list" class="session-list" aria-label="Queue" aria-live="polite">No queue entries</div>
+  <div id="queue-list" class="session-list" aria-label="Queued submissions" aria-live="polite" hidden></div>
   <section id="confirmation" hidden aria-label="Confirm clear sessions">
     <p id="confirm-text">Stop the selected WebHelm session(s)? Tasks in progress may be interrupted. Queued jobs remain and may create new sessions.</p>
     <div class="buttons">

@@ -252,6 +252,9 @@ try {
       })),
       hasGlobalStop:!!document.querySelector('#clear'),
       hasTotals:!!document.querySelector('.stats'),
+      queueHidden:document.querySelector('#queue-list')?.hidden,
+      hasGeneralQueueHeading:!!document.querySelector('#queue-heading'),
+      hasEmptyQueueText:document.body.innerText.includes('No queue entries'),
       height:document.body.scrollHeight,
     })`);
     return v?.daemon==='Online' && v.groups.length===2?v:null;
@@ -261,6 +264,9 @@ try {
   assert.equal(displayed.duplicateTitle,false,'the workspace name appears only in its own row');
   assert.equal(displayed.hasGlobalStop,false);
   assert.equal(displayed.hasTotals,false);
+  assert.equal(displayed.queueHidden,true,'empty queue has no visible section');
+  assert.equal(displayed.hasGeneralQueueHeading,false,'no redundant global Queue heading');
+  assert.equal(displayed.hasEmptyQueueText,false,'no empty queue placeholder');
   assert.ok(displayed.groups.every(group=>group.action==='Clear sessions'));
   assert.ok(displayed.groups.every(group=>/1 session$/.test(group.stats)));
   assert.ok(displayed.height<450,'popup remains compact with two active workspaces');
@@ -368,10 +374,21 @@ try {
   }});
   assert.equal(receipt.ok,true);
   const queueDisplayed=await waitFor(async()=>evaluate(popupSid,
-    `({title:document.querySelector('.queue-title')?.textContent, heading:document.querySelector('.queue-platform-title')?.textContent, remove:document.querySelector('.queue-row button:last-child')?.textContent})`)
-    .then(row=>row.title==='Review this draft' && row.remove==='Remove'?row:null), 'queue title and remove');
-  assert.equal(queueDisplayed.title,'Review this draft');
+    `(()=>{const title=document.querySelector('.queue-title'),detail=document.querySelector('.queue-detail'),remove=document.querySelector('.queue-remove');return {
+      title:title?.textContent,heading:document.querySelector('.queue-platform-title')?.textContent,
+      remove:remove?.textContent,removeLabel:remove?.getAttribute('aria-label'),
+      titleSize:title?parseFloat(getComputedStyle(title).fontSize):null,
+      detailSize:detail?parseFloat(getComputedStyle(detail).fontSize):null,
+      removeWidth:remove?.getBoundingClientRect().width,
+      queueVisible:!document.querySelector('#queue-list')?.hidden,
+    }})()`)
+    .then(row=>row.title==='Review this draft'&&row.remove==='×'?row:null), 'compact queue row with icon button');
   assert.equal(queueDisplayed.heading,'ChatGPT Queue');
+  assert.equal(queueDisplayed.queueVisible,true);
+  assert.match(queueDisplayed.removeLabel,/Remove Review this draft from queue/);
+  assert.ok(queueDisplayed.titleSize<=10,'queue title smaller than workspace session title');
+  assert.ok(queueDisplayed.detailSize<=9,'queue state text stays compact');
+  assert.ok(queueDisplayed.removeWidth<=22,'remove uses a compact icon button');
   // A large real durable backlog must be compact by thread rather than
   // obscuring the Keep Alive sites or encouraging bulk cancellation.
   for(let i=0;i<12;i++) {
@@ -382,11 +399,10 @@ try {
     assert.equal(queued.ok,true);
   }
   const folded=await waitFor(async()=>evaluate(popupSid,`(()=>({
-    total:document.querySelector('#queue-count')?.textContent,
     rows:document.querySelectorAll('.queue-row').length,
-    toggle:document.querySelector('#queue-toggle')?.textContent,
+    toggle:document.querySelector('.queue-platform-header #queue-toggle')?.textContent,
     kept:document.querySelectorAll('.keepalive-row').length,
-  }))()` ).then(x=>x.total?.includes('13 pending')&&x.rows===2?x:null), 'compact long queue by distinct thread');
+  }))()`).then(x=>x.rows===2&&x.toggle?.includes('Show all 13')?x:null), 'compact long queue by distinct thread');
   assert.match(folded.toggle,/Show all 13/);
   assert.equal(folded.kept,1,'folding backlog preserves Keep Alive display');
   await evaluate(popupSid,`document.querySelector('#queue-toggle').click()`);
