@@ -395,6 +395,70 @@ test("attachment worker uploads binary files before clicking Send", async t => {
   assert.ok(calls[1].includes("button[data-testid"));
 });
 
+test("long newTurn sends prompt.md via existing file upload, keeps short ?prompt, and removes local file", async t => {
+  const { readFileSync, existsSync, statSync } = await import("node:fs");
+  const { deliveryMessage, targetUrl } = await import("../../runtime/chatgpt/chatgpt-probe.mjs");
+  const { q, root } = fixture();
+  t.after(async () => { await q.shutdown(); rmSync(root,{recursive:true,force:true}); });
+  const original = "Execute these instructions:\n" + "a".repeat(3000) + "\nEnd.";
+  const queueId=q.enqueue({thread_id:"long",message:original,idempotency_key:"large-new-turn"}).queue_id;
+  const url=targetUrl(null,"long",original);
+  assert.equal(new URL(url).searchParams.get("prompt"),deliveryMessage(original));
+  assert.ok(url.length<200,"large prompt is absent from the URL");
+  assert.ok(!url.includes("Execute these instructions"));
+  q.sessions.set(queueId,"private-session");
+  let uploadedFile, uploadedDir, calls=0;
+  q._exec=async (_sid,script)=>{
+    calls++;
+    if(calls===1){
+      const files=JSON.parse(script.match(/const files=(\[[^\n]+\]);/)[1]);
+      assert.equal(files.length,1);
+      uploadedFile=files[0];uploadedDir=uploadedFile.slice(0,uploadedFile.lastIndexOf("/"));
+      assert.equal(uploadedFile.split("/").pop(),"prompt.md");
+      assert.equal(readFileSync(uploadedFile,"utf8"),original,"file contains the exact original prompt");
+      assert.equal(statSync(uploadedFile).mode & 0o777,0o600);
+      return {ready:true};
+    }
+    assert.equal(calls,2);
+    assert.ok(script.includes(deliveryMessage(original)),"submits the short prompt referring to attachment");
+    assert.ok(!script.includes(original),"does not put the original long prompt into browser submission script");
+    assert.ok(existsSync(uploadedFile),"local file exists until upload finishes");
+    return {verified_by:"stop-button-visible"};
+  };
+  const result=await q._send(q.rows()[0]);
+  assert.equal(result.verified_by,"stop-button-visible");
+  assert.equal(calls,2);
+  assert.equal(existsSync(uploadedDir),false,"temporary directory is removed after newTurn");
+  assert.equal(q.rows()[0].message,original,"durable queue keeps original prompt");
+});
+
+test("long prompt.md temporary file is removed when upload fails", async t=>{
+  const { existsSync }=await import("node:fs");
+  const { q,root }=fixture();
+  t.after(async()=>{await q.shutdown();rmSync(root,{recursive:true,force:true});});
+  const msg="x".repeat(2001);
+  const id=q.enqueue({thread_id:"long",message:msg,idempotency_key:"fails-before-send"}).queue_id;
+  q.sessions.set(id,"private-session");
+  let dir;
+  q._exec=async (_sid,script)=>{
+    const files=JSON.parse(script.match(/const files=(\[[^\n]+\]);/)[1]);
+    dir=files.at(-1).slice(0,files.at(-1).lastIndexOf("/"));
+    assert.ok(existsSync(files.at(-1)));
+    throw Error("upload failed");
+  };
+  await assert.rejects(q._send(q.rows()[0]),/upload failed/);
+  assert.equal(existsSync(dir),false,"always clean up the temporary file");
+});
+
+test("newTurn uses original message at exactly 2000 characters and prompt.md above threshold",async()=>{
+  const {deliveryMessage,targetUrl,PROMPT_FILE_MESSAGE}=await import("../../runtime/chatgpt/chatgpt-probe.mjs");
+  const short="x".repeat(2000),long=short+"x";
+  assert.equal(new URL(targetUrl(null,"x",short)).searchParams.get("prompt"),short);
+  assert.equal(deliveryMessage(short),short);
+  assert.equal(deliveryMessage(long),PROMPT_FILE_MESSAGE);
+  assert.equal(new URL(targetUrl(null,"x",long)).searchParams.get("prompt"),PROMPT_FILE_MESSAGE);
+});
+
 test("ordinary new-turn URL redirects to Project thread without blocking queue", async () => {
   const { targetUrl, classifyProbe } = await import("../../runtime/chatgpt/chatgpt-probe.mjs");
   const url = targetUrl("g-p-12345678", "aabbccdd-1122-3344-5566-77889900aabb", "hello");

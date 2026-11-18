@@ -1,9 +1,10 @@
 import { DatabaseSync } from "node:sqlite";
-import { mkdirSync, existsSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync, existsSync, statSync } from "node:fs";
 import { join, resolve, isAbsolute } from "node:path";
+import { tmpdir } from "node:os";
 import { attachmentUploadScript } from "./attachment-upload.mjs";
 import { createHash, randomUUID } from "node:crypto";
-import { classifyProbe, PROBE_JS, targetUrl } from "./chatgpt-probe.mjs";
+import { classifyProbe, PROBE_JS, targetUrl, deliveryMessage, PROMPT_FILE_THRESHOLD } from "./chatgpt-probe.mjs";
 import { SEND_ENABLED_JS } from "./lifecycle-common.mjs";
 import { submissionScript } from "./submission-script.mjs";
 import { DurableQueueCore } from "../durable-queue-core.mjs";
@@ -244,11 +245,22 @@ export class ChatGPTQueue extends DurableQueueCore {
     const sid = this.sessions.get(item.id);
     if (!sid) throw new Error("missing prepared browser session");
     const attachments = JSON.parse(item.files_json || "[]");
-    if (attachments.length) {
-      const upload = await this._exec(sid, attachmentUploadScript(attachments));
-      if (!upload?.ready) throw new Error("ChatGPT attachments not ready for Send");
+    let tempDir;
+    try {
+      if (item.message.length > PROMPT_FILE_THRESHOLD) {
+        tempDir = mkdtempSync(join(tmpdir(), "webhelm-prompt-"));
+        const promptPath = join(tempDir, "prompt.md");
+        writeFileSync(promptPath, item.message, {encoding:"utf8",mode:0o600});
+        attachments.push(promptPath);
+      }
+      if (attachments.length) {
+        const upload = await this._exec(sid, attachmentUploadScript(attachments));
+        if (!upload?.ready) throw new Error("ChatGPT attachments not ready for Send");
+      }
+      return await this._exec(sid, submissionScript({...item, message:deliveryMessage(item.message)}));
+    } finally {
+      if (tempDir) rmSync(tempDir, {recursive:true,force:true});
     }
-    return this._exec(sid, submissionScript(item));
   }
   async _finish(id) {
     const sid = this.sessions.get(id);

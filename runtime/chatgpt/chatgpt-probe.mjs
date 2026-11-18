@@ -1,3 +1,10 @@
+export const PROMPT_FILE_THRESHOLD = 2000;
+export const PROMPT_FILE_MESSAGE = 'Read prompt.md and execute the task in that file.';
+
+export function deliveryMessage(message) {
+  return message.length > PROMPT_FILE_THRESHOLD ? PROMPT_FILE_MESSAGE : message;
+}
+
 export function targetUrl(projectId, threadId, message) {
   if (!threadId || !message) {
     throw new Error("thread_id and message are required");
@@ -5,7 +12,7 @@ export function targetUrl(projectId, threadId, message) {
   // A thread identity is global; ChatGPT may redirect /c/id to a
   // Project-scoped /g/project-id[-slug]/c/id. Use the ordinary URL.
   return "https://chatgpt.com/c/" + encodeURIComponent(threadId) +
-    "?" + new URLSearchParams({ prompt: message });
+    "?" + new URLSearchParams({ prompt: deliveryMessage(message) });
 }
 export const PROBE_JS = `(() => {
   const visible = e => !!e && !!e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden';
