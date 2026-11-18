@@ -1,6 +1,20 @@
 import { waitUntilStable } from "./readiness.mjs";
 export const SEND_ENABLED_JS =
   `(() => { const buttons=[...document.querySelectorAll('button[data-testid="send-button"],button[aria-label="Send prompt"],button[aria-label="Send"],form button[type="submit"]')]; const b=buttons.find(e=>e.getClientRects().length>0); return !!b && !b.disabled && b.getAttribute('aria-disabled') !== 'true'; })()`;
+// Only post-click Stop visibility acknowledges queue submission.
+// The same selector family is used to detect ongoing generation before a send.
+export const STOP_VISIBLE_JS = `(() => {
+  const visible = b => !!b?.getClientRects().length && getComputedStyle(b).visibility !== 'hidden';
+  return [...document.querySelectorAll('button')].some(b => {
+    if (!visible(b)) return false;
+    const label=(b.getAttribute('aria-label')||'').trim().toLowerCase();
+    const title=(b.getAttribute('title')||'').trim().toLowerCase();
+    const testId=(b.getAttribute('data-testid')||'').trim().toLowerCase();
+    return ['stop generating','stop answering','stop response','stop'].includes(label) ||
+      ['stop generating','stop answering'].includes(title) ||
+      ['stop-button','stop-generating-button'].includes(testId);
+  });
+})()`;
 export const CLICK_SEND_JS =
   `(() => { const visible=e=>!!e&&!!e.getClientRects().length; const running=[...document.querySelectorAll('button')].some(b=>{ if(!visible(b))return false; const l=(b.getAttribute('aria-label')||'').trim().toLowerCase(),t=(b.getAttribute('title')||'').trim().toLowerCase(),d=(b.getAttribute('data-testid')||'').trim().toLowerCase(); return ['stop generating','stop answering','stop response','stop'].includes(l)||['stop generating','stop answering'].includes(t)||['stop-button','stop-generating-button'].includes(d); }); if(running)return false; const b=document.querySelector('button[data-testid="send-button"],button[aria-label="Send prompt"],button[aria-label="Send"],form button[type="submit"]'); if(!b||b.disabled||b.getAttribute('aria-disabled')==='true')return false; b.click(); return true; })()`;
 export function targetUrl(

@@ -374,16 +374,18 @@ try {
   }});
   assert.equal(receipt.ok,true);
   const queueDisplayed=await waitFor(async()=>evaluate(popupSid,
-    `(()=>{const title=document.querySelector('.queue-title'),detail=document.querySelector('.queue-detail'),remove=document.querySelector('.queue-remove');return {
+    `(()=>{const title=document.querySelector('.queue-title'),detail=document.querySelector('.queue-meta'),remove=document.querySelector('.queue-remove');return {
       title:title?.textContent,heading:document.querySelector('.queue-platform-title')?.textContent,
       remove:remove?.textContent,removeLabel:remove?.getAttribute('aria-label'),
       titleSize:title?parseFloat(getComputedStyle(title).fontSize):null,
       detailSize:detail?parseFloat(getComputedStyle(detail).fontSize):null,
       removeWidth:remove?.getBoundingClientRect().width,
       queueVisible:!document.querySelector('#queue-list')?.hidden,
+      threadId:document.querySelector('.queue-thread-id')?.textContent,
     }})()`)
     .then(row=>row.title==='Review this draft'&&row.remove==='×'?row:null), 'compact queue row with icon button');
   assert.equal(queueDisplayed.heading,'ChatGPT Queue');
+  assert.equal(queueDisplayed.threadId,'webhelm-e2e-title-test');
   assert.equal(queueDisplayed.queueVisible,true);
   assert.match(queueDisplayed.removeLabel,/Remove Review this draft from queue/);
   assert.ok(queueDisplayed.titleSize<=10,'queue title smaller than workspace session title');
@@ -398,31 +400,25 @@ try {
     }});
     assert.equal(queued.ok,true);
   }
-  const folded=await waitFor(async()=>evaluate(popupSid,`(()=>({
+  const grouped=await waitFor(async()=>evaluate(popupSid,`(()=>({
     rows:document.querySelectorAll('.queue-row').length,
-    toggle:document.querySelector('.queue-platform-header #queue-toggle')?.textContent,
-    summary:document.querySelector('.queue-platform-count')?.textContent,
+    threadIds:[...document.querySelectorAll('.queue-thread-id')].map(n=>n.textContent),
     kept:document.querySelectorAll('.keepalive-row').length,
-  }))()`).then(x=>x.rows===2&&x.toggle?.includes('Show all 13')?x:null), 'compact long queue by distinct thread');
-  assert.match(folded.toggle,/Show all 13/);
-  assert.equal(folded.summary,'2 threads · 13 messages');
-  assert.equal(folded.kept,1,'folding backlog preserves Keep Alive display');
-  await evaluate(popupSid,`document.querySelector('#queue-toggle').click()`);
-  await waitFor(async()=>evaluate(popupSid,'document.querySelectorAll(".queue-row").length===13'), 'expand whole queue');
-  const expandedThreads=await evaluate(popupSid,`[...document.querySelectorAll('.queue-row')].map(row=>({
-    title:row.querySelector('.queue-title')?.textContent,
-    followup:row.classList.contains('queue-followup'),
-    detail:row.querySelector('.queue-detail')?.textContent,
-  }))`);
-  assert.equal(expandedThreads[0].title,'Review this draft');
-  assert.equal(expandedThreads[1].title,'Pending turn 0');
-  assert.equal(expandedThreads[1].followup,false,'other thread starts its own group');
-  assert.equal(expandedThreads[2].title,'Pending turn 1');
-  assert.equal(expandedThreads[2].followup,true,'later item nests under its thread');
-  assert.equal(expandedThreads[2].detail,'Waiting behind earlier message');
-  await evaluate(popupSid,`document.querySelector('#queue-toggle').click()`);
-  await waitFor(async()=>evaluate(popupSid,'document.querySelectorAll(".queue-row").length===2'), 'refold queue');
-  console.log('QUEUE FOLD / EXPAND PASS: 13 pending turns, 2 thread heads');
+    hasToggle:!!document.querySelector('#queue-toggle'),
+    entries:[...document.querySelectorAll('.queue-row')].map(n=>({
+      title:n.querySelector('.queue-title')?.textContent,
+      meta:n.querySelector('.queue-meta')?.textContent,
+    })),
+  }))()`).then(x=>x.rows===13?x:null),'13 messages grouped under two thread IDs');
+  assert.deepEqual(grouped.threadIds,['webhelm-e2e-title-test','webhelm-e2e-same-thread-backlog']);
+  assert.equal(grouped.kept,1);
+  assert.equal(grouped.hasToggle,false);
+  assert.equal(grouped.entries[0].title,'Review this draft');
+  for(let i=0;i<12;i++){
+    assert.equal(grouped.entries[i+1].title,'Pending turn '+i);
+    assert.match(grouped.entries[i+1].meta,/^[(][0-9]+ seconds?, 0 attempts[)]$/);
+  }
+  console.log('QUEUE THREAD GROUP PASS: 2 thread IDs, 13 individually visible messages');
   await evaluate(popupSid,'globalThis.__queueTitleNode=document.querySelector(".queue-title")');
   await mouseClick(popupSid,'.queue-title');
   assert.equal(await evaluate(popupSid,'document.querySelector(".queue-title")===globalThis.__queueTitleNode'),true,

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { submissionScript } from '../../runtime/chatgpt/submission-script.mjs';
+import { STOP_VISIBLE_JS } from '../../runtime/chatgpt/lifecycle-common.mjs';
 
 test('queue submission verifies target thread without unavailable URL global', async () => {
   for (const [observed, expected] of [
@@ -45,8 +46,8 @@ test('submission selects a visible enabled Send behind disabled duplicates', asy
     if (source.includes('location.pathname')) return item.thread_id;
     if (source.includes('composer_text')) return {state:'READY',composer_text:item.message};
     if (source.includes('const selector=')) return vm.runInNewContext(source,{document});
-    if (source.includes('h4[data-conversation-role')) return clicked ? 1 : 0;
-    if (source.includes('buttons.find')) return !clicked;
+    if (source.includes('buttons.find')) return true;
+    if (source.includes('stop-button')) return clicked;
     throw new Error('Unknown browser script');
   };
   const result = await vm.runInNewContext(`(async()=>{ ${submissionScript(item)} })()`, {
@@ -59,6 +60,48 @@ test('submission selects a visible enabled Send behind disabled duplicates', asy
     },
     sleep: async () => {},
   });
-  assert.deepEqual({...result}, {verified_by:'user-turn'});
+  assert.deepEqual({...result}, {verified_by:'stop-button-visible'});
   assert.equal(clicked,true);
+});
+
+test('Stop button is the only post-click confirmation, without user turn or Send-disabled fallback', async()=>{
+  const item={thread_id:'thread-1234',message:'hi'};
+  const script=submissionScript(item);
+  assert.ok(!script.includes('user-turn') && !script.includes('send-button-disabled') && !script.includes('h4[data-conversation-role'));
+  let clicked=false, stopChecks=0;
+  const result=await vm.runInNewContext('(async()=>{ '+script+' })()',{
+    js:async source=>{
+      if(source.includes('location.pathname'))return item.thread_id;
+      if(source.includes('composer_text'))return {state:'READY',composer_text:item.message};
+      if(source.includes('const selector='))return '#send';
+      if(source.includes('buttons.find'))return true;
+      if(source.includes('stop-button')){stopChecks++;return false;}
+      throw Error('Unexpected verification source');
+    },
+    click:async()=>{clicked=true;},sleep:async()=>{},
+  });
+  assert.equal(clicked,true);
+  assert.equal(stopChecks,60);
+  assert.equal(result.diagnostic,'post_submit_stop_not_observed_no_resend');
+});
+
+test('post-click Stop visibility requires a visible generating control',()=>{
+  const button=(attrs={},shown=true)=>({
+    attrs,shown,
+    getClientRects(){return this.shown?[{}]:[];},
+    getAttribute(k){return this.attrs[k]||null;},
+  });
+  let buttons=[];
+  const run=()=>vm.runInNewContext(STOP_VISIBLE_JS,{
+    document:{querySelectorAll:()=>buttons},
+    getComputedStyle:()=>({visibility:'visible'}),
+  });
+  buttons=[button({'data-testid':'stop-button'},false)];
+  assert.equal(run(),false,'hidden Stop is not confirmation');
+  buttons=[button({'data-testid':'stop-button'},true)];
+  assert.equal(run(),true);
+  buttons=[button({'aria-label':'Stop generating'},true)];
+  assert.equal(run(),true);
+  buttons=[button({'aria-label':'Send'},true)];
+  assert.equal(run(),false,'Send button alone is not confirmation');
 });

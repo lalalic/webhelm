@@ -45,18 +45,17 @@
     #queue-list { border-top:1px solid light-dark(var(--border),#334155); margin-top:6px; padding-top:4px; max-height:240px; }
     .queue-platform { padding:3px 0; }
     .queue-platform + .queue-platform { border-top:1px solid light-dark(var(--border),#334155); }
-    .queue-platform-header { display:flex; align-items:center; justify-content:space-between; gap:6px; }
-    .queue-platform-title { font-size:11px; }
-    .queue-platform-count { font-size:9px; flex:1; text-align:right; color:light-dark(var(--muted),#acb8c9); white-space:nowrap; }
-    #queue-toggle { width:auto; padding:2px 5px; font-size:9px; }
-    .queue-row { display:flex; align-items:center; gap:6px; padding:3px 0; }
-    .queue-row.queue-followup { margin-left:9px; padding-left:7px; border-left:2px solid light-dark(var(--border),#40516a); }
-    .queue-info { min-width:0; flex:1; overflow-wrap:anywhere; }
-    .queue-info span { display:block; color:light-dark(var(--muted),#acb8c9); font-size:9px; line-height:1.3; }
-    .queue-info span.queue-warning { color:light-dark(var(--warning),#f7a4ad); font-weight:500; }
+    .queue-platform-title { display:block; font-size:11px; }
+    .queue-thread { padding:3px 0 3px 6px; }
+    .queue-thread + .queue-thread { border-top:1px solid light-dark(var(--border),#334155); }
+    .queue-thread-id { display:block; font-size:10px; font-family:ui-monospace,monospace; font-weight:500; color:light-dark(var(--muted),#acb8c9); overflow-wrap:anywhere; }
+    .queue-row { display:flex; align-items:center; gap:5px; padding:2px 0 2px 9px; }
+    .queue-info { min-width:0; flex:1; display:flex; gap:4px; align-items:baseline; overflow:hidden; }
+    .queue-meta { flex-shrink:0; white-space:nowrap; color:light-dark(var(--muted),#acb8c9); font-size:9px; }
+    .queue-unconfirmed .queue-title { color:light-dark(var(--warning),#f7a4ad); }
     .queue-row button.queue-remove { flex:0 0 20px; width:20px; height:20px; padding:0; border:0; background:transparent; color:light-dark(var(--muted),#acb8c9); font-size:16px; font-weight:400; line-height:18px; }
     button.tab-title, button.queue-title { flex:1; min-width:0; width:100%; padding:0; border:0; border-radius:2px; background:transparent; color:inherit; text-align:left; font-size:12px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; }
-    button.queue-title { font-size:10px; }
+    button.queue-title { flex:1; min-width:0; width:auto; font-size:10px; }
     button.tab-title:hover, button.queue-title:hover { text-decoration:underline; }
     button.tab-title:disabled, button.queue-title:disabled { cursor:default; text-decoration:none; }
     .session-info, .queue-info { overflow:hidden; }

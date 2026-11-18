@@ -313,9 +313,9 @@ export class ChatGPTQueue extends DurableQueueCore {
           delay: this.intervalMs / 1000,
           receipt: receipt.diagnostic,
         });
-      } else if (["send-button-disabled", "user-turn"].includes(receipt?.verified_by)) {
-        // A confirmed user turn does not need a fixed 60s same-thread gap.
-        // A follow-up is re-probed; RUNNING still blocks overlapping sends.
+      } else if (receipt?.verified_by === "stop-button-visible") {
+        // Post-click Stop confirms the reply started; no fixed 60s gap is needed.
+        // The next turn is re-probed; RUNNING still blocks overlapping sends.
         this.transition(item.id, owner, "SENDING", "SENT", {
           delay: 0, receipt: receipt.verified_by,
         });

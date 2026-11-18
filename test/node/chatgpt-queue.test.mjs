@@ -290,7 +290,7 @@ test("dispatcher uses one private session and accepts only a verified send recei
         };
       }
       sends++;
-      return { ok: true, value: { verified_by: "send-button-disabled" } };
+      return { ok: true, value: { verified_by: "stop-button-visible" } };
     },
     stopSession: async () => {
       stops++;
@@ -385,7 +385,7 @@ test("attachment worker uploads binary files before clicking Send", async t => {
   q.sessions.set("item-one", "owned-session");
   q._exec = async (_sid, source) => {
     calls.push(source);
-    return calls.length === 1 ? {ready:true} : {verified_by:"send-button-disabled"};
+    return calls.length === 1 ? {ready:true} : {verified_by:"stop-button-visible"};
   };
   await q._send({id:"item-one", thread_id:"thread123456", project_id:null,
     message:"Review this", files_json:JSON.stringify([doc])});
@@ -555,7 +555,7 @@ test("sequential queued messages do not inherit a fixed 60s delay", async (t) =>
   const {q,root}=fixture(100);
   t.after(async()=>{await q.shutdown();rmSync(root,{recursive:true,force:true});});
   q._probe=async()=>"READY";
-  q._send=async()=>({verified_by:"user-turn"});
+  q._send=async()=>({verified_by:"stop-button-visible"});
   const first=q.enqueue({thread_id:"t",message:"hi",idempotency_key:"first"}).queue_id;
   const next=q.enqueue({thread_id:"t",message:"good day",idempotency_key:"next"}).queue_id;
   await q.process(q.claim("worker1"));
