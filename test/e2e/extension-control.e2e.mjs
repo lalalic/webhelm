@@ -381,11 +381,17 @@ try {
       detailSize:detail?parseFloat(getComputedStyle(detail).fontSize):null,
       removeWidth:remove?.getBoundingClientRect().width,
       queueVisible:!document.querySelector('#queue-list')?.hidden,
-      threadId:document.querySelector('.queue-thread-id')?.textContent,
+      threadId:document.querySelector('.queue-thread-link')?.textContent,
+      threadHref:document.querySelector('.queue-thread-link')?.getAttribute('href'),
+      titleTag:title?.tagName,
+      titleWeight:title?getComputedStyle(title).fontWeight:null,
     }})()`)
     .then(row=>row.title==='Review this draft'&&row.remove==='×'?row:null), 'compact queue row with icon button');
   assert.equal(queueDisplayed.heading,'ChatGPT Queue');
   assert.equal(queueDisplayed.threadId,'webhelm-e2e-title-test');
+  assert.match(queueDisplayed.threadHref,/^https:\/\/chatgpt.com\/c\/webhelm-e2e-title-test$/);
+  assert.equal(queueDisplayed.titleTag,'SPAN','request title is plain text, not a link or button');
+  assert.equal(queueDisplayed.titleWeight,'400','request title is not bold');
   assert.equal(queueDisplayed.queueVisible,true);
   assert.match(queueDisplayed.removeLabel,/Remove Review this draft from queue/);
   assert.ok(queueDisplayed.titleSize<=10,'queue title smaller than workspace session title');
@@ -402,7 +408,7 @@ try {
   }
   const grouped=await waitFor(async()=>evaluate(popupSid,`(()=>({
     rows:document.querySelectorAll('.queue-row').length,
-    threadIds:[...document.querySelectorAll('.queue-thread-id')].map(n=>n.textContent),
+    threadIds:[...document.querySelectorAll('.queue-thread-link')].map(n=>n.textContent),
     kept:document.querySelectorAll('.keepalive-row').length,
     hasToggle:!!document.querySelector('#queue-toggle'),
     entries:[...document.querySelectorAll('.queue-row')].map(n=>({
@@ -416,19 +422,23 @@ try {
   assert.equal(grouped.entries[0].title,'Review this draft');
   for(let i=0;i<12;i++){
     assert.equal(grouped.entries[i+1].title,'Pending turn '+i);
-    assert.match(grouped.entries[i+1].meta,/^[(][0-9]+ seconds?, 0 attempts[)]$/);
+    assert.match(grouped.entries[i+1].meta,/^[(][0-9]+[smhd]\/0[)]$/);
   }
   console.log('QUEUE THREAD GROUP PASS: 2 thread IDs, 13 individually visible messages');
-  await evaluate(popupSid,'globalThis.__queueTitleNode=document.querySelector(".queue-title")');
-  await mouseClick(popupSid,'.queue-title');
-  assert.equal(await evaluate(popupSid,'document.querySelector(".queue-title")===globalThis.__queueTitleNode'),true,
-    'the popup retains the clicked queue node across a refresh');
+  const frozen=await evaluate(popupSid,'document.querySelector(".queue-row .queue-meta").textContent');
+  await new Promise(resolve=>setTimeout(resolve,1250));
+  assert.equal(await evaluate(popupSid,'document.querySelector(".queue-row .queue-meta").textContent'),
+    frozen,'elapsed time is static while popup remains open');
+  await evaluate(popupSid,'globalThis.__queueThreadNode=document.querySelector(".queue-thread-link")');
+  await mouseClick(popupSid,'.queue-thread-link');
+  assert.equal(await evaluate(popupSid,'document.querySelector(".queue-thread-link")===globalThis.__queueThreadNode'),true,
+    'the popup retains the thread link node across refresh');
   const opened=await waitFor(async()=>{
     const tabs=await evaluate(workerSid,'chrome.tabs.query({})');
     return tabs.some(tab=>tab.url?.startsWith('https://chatgpt.com/c/webhelm-e2e-title-test'));
-  },'queue title opens thread');
+  },'thread ID link opens thread');
   assert.equal(opened,true);
-  await mouseClick(popupSid,'.queue-title');
+  await mouseClick(popupSid,'.queue-thread-link');
   const focusedQueueTabs=await evaluate(workerSid,"chrome.tabs.query({}).then(tabs=>tabs.filter(tab=>tab.url?.startsWith('https://chatgpt.com/c/webhelm-e2e-title-test')).map(tab=>({id:tab.id,active:tab.active})))");
   assert.equal(focusedQueueTabs.length,1,'repeated title click focuses the existing destination instead of opening a duplicate');
   assert.equal(focusedQueueTabs[0].active,true);
@@ -437,12 +447,16 @@ try {
     const queue=await request({op:'queue-list'});
     return !queue.items.some(item=>item.id===receipt.queue_id);
   },'queue item removal');
-  const removalMessage=await waitFor(async()=>{
+  await waitFor(async()=>{
+    const status=await rpc(workerSid,'workspace.control.status');
+    return status.lastResult?.queue_id===receipt.queue_id && status.lastResult.ok;
+  },'queue removal acknowledgement from daemon');
+  await waitFor(async()=>{
     const msg=await evaluate(popupSid,"document.querySelector('#message').textContent");
-    return /Queue entry removed/.test(msg)?msg:null;
-  },'Queue removal acknowledgement');
-  assert.match(removalMessage,/Queue entry removed/);
-  console.log('QUEUE SHORT TITLE / NAVIGATE / REMOVE PASS');
+    return !msg.includes('Waiting for WebHelm daemon')?true:null;
+  },'popup status refresh');
+  assert.doesNotMatch(await evaluate(popupSid,"document.querySelector('#message').textContent"),/Queue entry removed/);
+  console.log('QUEUE COMPACT STATIC TIME / THREAD LINK / SILENT REMOVE PASS');
   await waitFor(async()=>evaluate(popupSid,"[...document.querySelectorAll('.workspace-title button')].every(button=>!button.disabled)"),'popup operations ready');
 
   await evaluate(popupSid,`[...document.querySelectorAll('.workspace-title button')].find(button=>button.parentElement.innerText.includes('Custom')).click()`);

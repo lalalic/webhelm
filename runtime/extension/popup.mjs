@@ -1,4 +1,4 @@
-import {readKeptSites, setStoredSite, readMenuWorkspaces} from './popup-data.mjs';
+import {readKeptSites, setStoredSite, readMenuWorkspaces, formatQueueElapsed} from './popup-data.mjs';
 const el = id => document.getElementById(id);
 el('extension-version').textContent = `v${chrome.runtime.getManifest().version}`;
 let confirming = false;
@@ -15,6 +15,7 @@ let queueConnected = false;
 const queueRows = new Map();
 const queueGroups = new Map();
 const queueThreadGroups = new Map();
+const queueOpenedAtSeconds=Math.floor(Date.now()/1000);
 
 async function rpc(method, args = {}) {
   const response = await chrome.runtime.sendMessage({method, args});
@@ -151,10 +152,9 @@ function renderWorkspaces(workspaces, busy, connected) {
 }
 
 function renderQueue(items, busy, connected) {
-  const nowSeconds=Math.floor(Date.now()/1000);
   const signature=JSON.stringify({
     items:items.map(item=>[item.id,item.platform,item.thread_id,item.title,item.url,item.state,item.attempts,item.created_at]),
-    nowSeconds,busy,connected,
+    busy,connected,
   });
   if(signature===lastQueueSignature)return;
   lastQueueSignature=signature;
@@ -195,11 +195,23 @@ function renderQueue(items, busy, connected) {
       let thread=queueThreadGroups.get(threadKey);
       if(!thread){
         thread=document.createElement('section');thread.className='queue-thread';
-        const id=document.createElement('strong');id.className='queue-thread-id';
-        id.textContent=threadId;id.title=threadId;
+        const link=document.createElement('a');link.className='queue-thread-link';
+        link.textContent=threadId;
+        link.addEventListener('click',async event=>{
+          event.preventDefault();
+          const queueId=thread.querySelector('.queue-row')?.dataset.queueId;
+          if(!queueId)return;
+          try{await rpc('workspace.control.openQueue',{queueId});}
+          catch(error){el('message').textContent=error.message;}
+        });
         const rows=document.createElement('div');rows.className='queue-thread-rows';
-        thread.append(id,rows);queueThreadGroups.set(threadKey,thread);
+        thread.append(link,rows);queueThreadGroups.set(threadKey,thread);
       }
+      const link=thread.querySelector('.queue-thread-link');
+      const url=entries.find(item=>item.url)?.url;
+      if(connected&&url)link.href=url;
+      else link.removeAttribute('href');
+      link.title=threadId;
       const rows=thread.querySelector('.queue-thread-rows');
       for(const item of entries){
         const key=platform+':'+item.id;
@@ -207,10 +219,7 @@ function renderQueue(items, busy, connected) {
         if(!row){
           row=document.createElement('div');row.className='queue-row';
           const info=document.createElement('div');info.className='queue-info';
-          const title=actionButton('',false,async()=>{
-            try{await rpc('workspace.control.openQueue',{queueId:item.id});el('message').textContent='Queue destination opened.';}
-            catch(error){el('message').textContent=error.message;}
-          },'queue-title');
+          const title=document.createElement('span');title.className='queue-title';
           const meta=document.createElement('span');meta.className='queue-meta';
           const remove=actionButton('×',false,async()=>{
             try{
@@ -226,15 +235,12 @@ function renderQueue(items, busy, connected) {
         const title=row.querySelector('.queue-title');
         title.textContent=item.title||platform+' message';
         title.title=(item.title||platform+' message')+(item.state==='UNCERTAIN'?' — Send not confirmed; check thread before removing.':'');
-        title.disabled=!connected||!item.url;
+        row.dataset.queueId=item.id;
         row.dataset.state=item.state;
         row.classList.toggle('queue-unconfirmed',item.state==='UNCERTAIN');
-        const age=Number(item.created_at);
-        const seconds=Number.isFinite(age)&&age>0 ? Math.max(0,nowSeconds-Math.floor(age)) : null;
+        const elapsed=formatQueueElapsed(item.created_at,queueOpenedAtSeconds);
         const attempts=Math.max(0,Number(item.attempts)||0);
-        row.querySelector('.queue-meta').textContent='('+
-          (seconds===null?'':seconds+' second'+(seconds===1?'':'s')+', ')+
-          attempts+' attempt'+(attempts===1?'':'s')+')';
+        row.querySelector('.queue-meta').textContent='('+(elapsed??'–')+'/'+attempts+')';
         const remove=row.querySelector('.queue-remove');
         const cancellable=['QUEUED','WAITING','BLOCKED','UNCERTAIN'].includes(item.state);
         remove.disabled=!cancellable||busy||!connected;
@@ -268,7 +274,7 @@ async function refresh() {
       el('message').textContent = 'Applying WebHelm action…';
     } else if (state.lastResult) {
       el('message').textContent = state.lastResult.ok
-        ? (state.lastResult.queue_id ? 'Queue entry removed.' : `Last action: stopped ${state.lastResult.stoppedCount} session(s).`)
+        ? (state.lastResult.queue_id ? '' : `Last action: stopped ${state.lastResult.stoppedCount} session(s).`)
         : `Last action failed: ${state.lastResult.error}`;
     }
   } catch (error) {

@@ -1,6 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {compactQueue,queueStatusText,mergeKeptSites,readKeptSites,setStoredSite,menuWorkspaces,readMenuWorkspaces,WORKSPACE_STORAGE_KEY,SITE_STORAGE_KEY,SITE_STATUS_KEY} from '../../runtime/extension/popup-data.mjs';
+import {compactQueue,queueStatusText,formatQueueElapsed,mergeKeptSites,readKeptSites,setStoredSite,menuWorkspaces,readMenuWorkspaces,WORKSPACE_STORAGE_KEY,SITE_STORAGE_KEY,SITE_STATUS_KEY} from '../../runtime/extension/popup-data.mjs';
+
+test('elapsed queue metadata uses frozen compact s/m/h/d units and handles unknown timestamps',()=>{
+  const now=1_800_000;
+  for(const [age,expected] of [
+    [0,'0s'],[1,'1s'],[59,'59s'],[60,'1m'],[119,'1m'],[3599,'59m'],
+    [3600,'1h'],[86399,'23h'],[86400,'1d'],[172800,'2d'],[-10,'0s'],
+  ]) assert.equal(formatQueueElapsed(now-age,now),expected,'age='+age);
+  assert.equal(formatQueueElapsed(null,now),null);
+  assert.equal(formatQueueElapsed('',now),null);
+  assert.equal(formatQueueElapsed('invalid',now),null);
+});
 
 function fakeChrome(sites=[],states={}) {
   const local={[SITE_STORAGE_KEY]:sites};

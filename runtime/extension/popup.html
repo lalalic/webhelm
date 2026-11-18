@@ -48,16 +48,16 @@
     .queue-platform-title { display:block; font-size:11px; }
     .queue-thread { padding:3px 0 3px 6px; }
     .queue-thread + .queue-thread { border-top:1px solid light-dark(var(--border),#334155); }
-    .queue-thread-id { display:block; font-size:10px; font-family:ui-monospace,monospace; font-weight:500; color:light-dark(var(--muted),#acb8c9); overflow-wrap:anywhere; }
+    .queue-thread-link { display:block; font-size:10px; font-family:ui-monospace,monospace; font-weight:500; color:light-dark(var(--accent),#8dbdff); overflow-wrap:anywhere; text-decoration:underline; cursor:pointer; }
     .queue-row { display:flex; align-items:center; gap:5px; padding:2px 0 2px 9px; }
     .queue-info { min-width:0; flex:1; display:flex; gap:4px; align-items:baseline; overflow:hidden; }
     .queue-meta { flex-shrink:0; white-space:nowrap; color:light-dark(var(--muted),#acb8c9); font-size:9px; }
     .queue-unconfirmed .queue-title { color:light-dark(var(--warning),#f7a4ad); }
     .queue-row button.queue-remove { flex:0 0 20px; width:20px; height:20px; padding:0; border:0; background:transparent; color:light-dark(var(--muted),#acb8c9); font-size:16px; font-weight:400; line-height:18px; }
-    button.tab-title, button.queue-title { flex:1; min-width:0; width:100%; padding:0; border:0; border-radius:2px; background:transparent; color:inherit; text-align:left; font-size:12px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; }
-    button.queue-title { flex:1; min-width:0; width:auto; font-size:10px; }
-    button.tab-title:hover, button.queue-title:hover { text-decoration:underline; }
-    button.tab-title:disabled, button.queue-title:disabled { cursor:default; text-decoration:none; }
+    button.tab-title { flex:1; min-width:0; width:100%; padding:0; border:0; border-radius:2px; background:transparent; color:inherit; text-align:left; font-size:12px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; }
+    .queue-title { flex:1; min-width:0; font-size:10px; font-weight:400; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    button.tab-title:hover { text-decoration:underline; }
+    button.tab-title:disabled { cursor:default; text-decoration:none; }
     .session-info, .queue-info { overflow:hidden; }
     .queue-info .queue-title { margin:0; }
 

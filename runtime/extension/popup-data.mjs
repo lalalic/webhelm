@@ -96,6 +96,17 @@ export function queueStatusText(item,{head=item,remaining=0}={}) {
   return message;
 }
 
+// Snapshot elapsed time once when the extension menu opens.
+export function formatQueueElapsed(createdAt, snapshotSeconds) {
+  const created=Number(createdAt);
+  if(!Number.isFinite(created)||created<=0)return null;
+  const elapsed=Math.max(0,Math.floor(snapshotSeconds-created));
+  if(elapsed<60)return elapsed+'s';
+  if(elapsed<3600)return Math.floor(elapsed/60)+'m';
+  if(elapsed<86400)return Math.floor(elapsed/3600)+'h';
+  return Math.floor(elapsed/86400)+'d';
+}
+
 // Keep hidden groups out of the toolbar even if a running older worker has
 // not yet reloaded its control RPC. Do not mutate the persisted configuration.
 export const WORKSPACE_STORAGE_KEY='browserWorkspaceManager.v1';
