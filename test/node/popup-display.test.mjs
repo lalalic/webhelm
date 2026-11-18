@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {compactQueue,mergeKeptSites,readKeptSites,setStoredSite,menuWorkspaces,readMenuWorkspaces,WORKSPACE_STORAGE_KEY,SITE_STORAGE_KEY,SITE_STATUS_KEY} from '../../runtime/extension/popup-data.mjs';
+import {compactQueue,queueStatusText,mergeKeptSites,readKeptSites,setStoredSite,menuWorkspaces,readMenuWorkspaces,WORKSPACE_STORAGE_KEY,SITE_STORAGE_KEY,SITE_STATUS_KEY} from '../../runtime/extension/popup-data.mjs';
 
 function fakeChrome(sites=[],states={}) {
   const local={[SITE_STORAGE_KEY]:sites};
@@ -50,6 +50,38 @@ test('queue defaults to distinct thread heads; preserves every pending record un
   const expanded=compactQueue(rows,{expanded:true});
   assert.equal(expanded.visible.length,102);
   assert.equal(expanded.hidden,0);
+});
+
+test('same-thread unconfirmed send is one thread with a blocked follow-up, not independent queued work',()=>{
+  const rows=[
+    {id:'first',thread_id:'same',platform:'ChatGPT',state:'UNCERTAIN',attempts:1},
+    {id:'second',thread_id:'same',platform:'ChatGPT',state:'QUEUED',attempts:0},
+  ];
+  const folded=compactQueue(rows);
+  assert.equal(folded.threads,1);
+  assert.deepEqual(folded.visible.map(x=>x.id),['first']);
+  assert.equal(queueStatusText(rows[0],{remaining:folded.behind.get('first')}),
+    'Send unconfirmed — open thread to check · 1 later message waiting');
+  const full=compactQueue(rows,{expanded:true});
+  assert.deepEqual(full.visible.map(x=>x.id),['first','second']);
+  assert.equal(full.headFor.get('second'),rows[0]);
+  assert.equal(queueStatusText(rows[1],{head:full.headFor.get('second')}),
+    'Waiting — previous send unconfirmed');
+  assert.equal(rows[0].attempts,1);
+  assert.equal(rows[1].attempts,0);
+});
+
+test('expanded queue keeps each thread contiguous under its head',()=>{
+  const rows=[
+    {id:'first',thread_id:'a',platform:'ChatGPT',state:'UNCERTAIN'},
+    {id:'second',thread_id:'b',platform:'ChatGPT',state:'QUEUED'},
+    {id:'third',thread_id:'a',platform:'ChatGPT',state:'QUEUED'},
+    {id:'fourth',thread_id:'b',platform:'ChatGPT',state:'QUEUED'},
+  ];
+  assert.deepEqual(compactQueue(rows,{expanded:true}).visible.map(x=>x.id),
+    ['first','third','second','fourth']);
+  assert.deepEqual(rows.map(x=>x.id),['first','second','third','fourth'],
+    'presentation must not reorder the durable queue');
 });
 
 test('queue preview limits many threads but preserves row actions when expanded',()=>{

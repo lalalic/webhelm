@@ -59,17 +59,41 @@ export function compactQueue(items, {expanded=false,maxHeads=8}={}) {
   const threads=new Map();
   for (const [index,item] of all.entries()) {
     const key=threadKey(item);
-    if (!threads.has(key)) threads.set(key,{head:item,index,count:0});
+    if (!threads.has(key)) threads.set(key,{head:item,index,count:0,items:[]});
     threads.get(key).count++;
+    threads.get(key).items.push(item);
   }
   const heads=[...threads.values()].sort((a,b)=>
     (priority[a.head.state]??5)-(priority[b.head.state]??5)||a.index-b.index);
-  const visible=expanded ? all : heads.slice(0,Math.max(1,maxHeads)).map(x=>x.head);
+  const visible=expanded ? heads.flatMap(x=>x.items) : heads.slice(0,Math.max(1,maxHeads)).map(x=>x.head);
+  const headFor=new Map(heads.flatMap(x=>x.items.map(item=>[item.id,x.head])));
   const behind=new Map(heads.map(x=>[x.head.id,x.count-1]));
   const uncertain=all.filter(x=>x.state==='UNCERTAIN').length;
   const blocked=all.filter(x=>x.state==='BLOCKED').length;
-  return {visible,total:all.length,threads:threads.size,behind,
+  return {visible,total:all.length,threads:threads.size,behind,headFor,
     hidden:all.length-visible.length,uncertain,blocked};
+}
+
+// Statuses describe what the user can do, not internal retry counters.
+// A later QUEUED item cannot be sent until earlier items in the same thread resolve.
+export function queueStatusText(item,{head=item,remaining=0}={}) {
+  const state=String(item.state||'QUEUED').toUpperCase();
+  const following=head.id!==item.id;
+  let message;
+  if(following && ['UNCERTAIN','BLOCKED'].includes(head.state))
+    message=head.state==='UNCERTAIN' ? 'Waiting — previous send unconfirmed' : 'Waiting — previous message blocked';
+  else if(following) message='Waiting behind earlier message';
+  else message=({
+    UNCERTAIN:'Send unconfirmed — open thread to check',
+    BLOCKED:'Blocked — needs attention',
+    SENDING:'Sending',
+    CHECKING:'Checking delivery',
+    WAITING:'Waiting to send',
+    QUEUED:'Queued to send',
+  })[state]||state.toLowerCase();
+  if(!following && remaining>0)
+    message+=' · '+remaining+' later message'+(remaining===1?'':'s')+' waiting';
+  return message;
 }
 
 // Keep hidden groups out of the toolbar even if a running older worker has

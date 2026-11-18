@@ -1,4 +1,4 @@
-import {readKeptSites, setStoredSite, compactQueue, readMenuWorkspaces} from './popup-data.mjs';
+import {readKeptSites, setStoredSite, compactQueue, queueStatusText, readMenuWorkspaces} from './popup-data.mjs';
 const el = id => document.getElementById(id);
 el('extension-version').textContent = `v${chrome.runtime.getManifest().version}`;
 let confirming = false;
@@ -164,10 +164,18 @@ function renderQueue(items, busy, connected) {
   const shown=view.visible;
   const signature=JSON.stringify({shown:shown.map(item=>[item.id,item.platform,item.thread_id,item.title,item.url,item.state,item.attempts]),
     total:view.total,threads:view.threads,hidden:view.hidden,uncertain:view.uncertain,blocked:view.blocked,
-    behind:[...view.behind],busy,connected,queueExpanded});
+    behind:[...view.behind],relations:shown.map(item=>[item.id,view.headFor.get(item.id)?.id,view.headFor.get(item.id)?.state]),busy,connected,queueExpanded});
   if (signature===lastQueueSignature) return;
   lastQueueSignature=signature;
   const target=el('queue-list');
+  const platformCounts=new Map();
+  for (const item of items) {
+    const platform=String(item.platform||'Queue');
+    if(!platformCounts.has(platform))platformCounts.set(platform,{total:0,threads:new Set()});
+    const stat=platformCounts.get(platform);
+    stat.total++;
+    stat.threads.add(item.thread_id||item.id);
+  }
   target.hidden=!items.length;
   queueToggle.hidden=!(queueExpanded || view.hidden>0);
   queueToggle.textContent=queueExpanded?'Show less':'Show all '+view.total;
@@ -198,9 +206,14 @@ function renderQueue(items, busy, connected) {
       const heading=document.createElement('strong');heading.className='queue-platform-title';
       heading.textContent=platform==='Queue'?'Queue':`${platform} Queue`;
       const rows=document.createElement('div');rows.className='queue-platform-rows';
-      header.append(heading);
+      const count=document.createElement('span');count.className='queue-platform-count';
+      header.append(heading,count);
       group.append(header,rows);queueGroups.set(platform,group);target.append(group);
     }
+    const stats=platformCounts.get(platform);
+    group.querySelector('.queue-platform-count').textContent=stats.threads.size+
+      (stats.threads.size===1?' thread':' threads')+' · '+stats.total+
+      (stats.total===1?' message':' messages');
     if(platform===grouped.keys().next().value)group.querySelector('.queue-platform-header').append(queueToggle);
     for (const item of entries) {
       const key=`${platform}:${item.id}`;
@@ -214,7 +227,12 @@ function renderQueue(items, busy, connected) {
         },'queue-title');
         const detail=document.createElement('span');detail.className='queue-detail';
         const remove=actionButton('×',false,async()=>{
-          try {const result=await rpc('workspace.control.queueCancel',{queueId:item.id});if(!result.id)throw Error('Missing queue request ID');el('message').textContent='Waiting for WebHelm daemon…';}
+          try {
+            if(row.dataset.state==='UNCERTAIN' && !confirm('Delivery is unconfirmed. This message may already be in ChatGPT. Removing it cannot unsend it and will unblock later messages in this thread. Remove it?'))return;
+            const result=await rpc('workspace.control.queueCancel',{queueId:item.id});
+            if(!result.id)throw Error('Missing queue request ID');
+            el('message').textContent='Waiting for WebHelm daemon…';
+          }
           catch(error){el('message').textContent=error.message;}
           refresh();
         },'queue-remove');
@@ -224,17 +242,23 @@ function renderQueue(items, busy, connected) {
       title.textContent=item.title||`${platform} message`;
       title.title=item.title||`${platform} message`;
       title.disabled=!connected||!item.url;
-      const attempts=Number(item.attempts)||0;
-      const more=!queueExpanded ? (view.behind.get(item.id)||0) : 0;
-      row.querySelector('.queue-detail').textContent=`${String(item.state||'queued').toLowerCase()} · ${attempts} attempt${attempts===1?'':'s'}`+
-        (more ? ` · ${more} more in this thread` : '');
+      row.dataset.state=item.state;
+      const head=view.headFor.get(item.id)||item;
+      const following=head.id!==item.id;
+      row.classList.toggle('queue-followup',following);
+      const detail=row.querySelector('.queue-detail');
+      detail.textContent=queueStatusText(item,{head,remaining:!queueExpanded?(view.behind.get(item.id)||0):0});
+      detail.classList.toggle('queue-warning',item.state==='UNCERTAIN' || (following && head.state==='UNCERTAIN'));
       const remove=row.querySelector('button:last-child');
       const safe=['QUEUED','WAITING','BLOCKED','UNCERTAIN'].includes(item.state);
       remove.disabled=!safe||busy||!connected;
       remove.title=safe?'Remove '+title.textContent+' from queue':'Cannot remove a running or completed submission';
       remove.setAttribute('aria-label',remove.title);
-      row.querySelector('.queue-detail').title=['UNCERTAIN','BLOCKED'].includes(item.state)
-        ? 'Verify the submission before retrying; later turns in the thread may be waiting.' : '';
+      detail.title=item.state==='UNCERTAIN'
+        ? 'A send was attempted but no delivery receipt was confirmed. The message may already be in ChatGPT; it will not be retried automatically.'
+        : following && head.state==='UNCERTAIN'
+          ? 'This message has not been sent. It waits until the earlier unconfirmed send is resolved.'
+          : '';
       const rows=group.querySelector('.queue-platform-rows');
       if(row.parentElement!==rows)rows.append(row);
     }

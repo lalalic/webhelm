@@ -401,12 +401,25 @@ try {
   const folded=await waitFor(async()=>evaluate(popupSid,`(()=>({
     rows:document.querySelectorAll('.queue-row').length,
     toggle:document.querySelector('.queue-platform-header #queue-toggle')?.textContent,
+    summary:document.querySelector('.queue-platform-count')?.textContent,
     kept:document.querySelectorAll('.keepalive-row').length,
   }))()`).then(x=>x.rows===2&&x.toggle?.includes('Show all 13')?x:null), 'compact long queue by distinct thread');
   assert.match(folded.toggle,/Show all 13/);
+  assert.equal(folded.summary,'2 threads · 13 messages');
   assert.equal(folded.kept,1,'folding backlog preserves Keep Alive display');
   await evaluate(popupSid,`document.querySelector('#queue-toggle').click()`);
   await waitFor(async()=>evaluate(popupSid,'document.querySelectorAll(".queue-row").length===13'), 'expand whole queue');
+  const expandedThreads=await evaluate(popupSid,`[...document.querySelectorAll('.queue-row')].map(row=>({
+    title:row.querySelector('.queue-title')?.textContent,
+    followup:row.classList.contains('queue-followup'),
+    detail:row.querySelector('.queue-detail')?.textContent,
+  }))`);
+  assert.equal(expandedThreads[0].title,'Review this draft');
+  assert.equal(expandedThreads[1].title,'Pending turn 0');
+  assert.equal(expandedThreads[1].followup,false,'other thread starts its own group');
+  assert.equal(expandedThreads[2].title,'Pending turn 1');
+  assert.equal(expandedThreads[2].followup,true,'later item nests under its thread');
+  assert.equal(expandedThreads[2].detail,'Waiting behind earlier message');
   await evaluate(popupSid,`document.querySelector('#queue-toggle').click()`);
   await waitFor(async()=>evaluate(popupSid,'document.querySelectorAll(".queue-row").length===2'), 'refold queue');
   console.log('QUEUE FOLD / EXPAND PASS: 13 pending turns, 2 thread heads');
