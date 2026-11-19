@@ -20,17 +20,24 @@ export function compareVersions(a,b) {
   return 0;
 }
 
-export function npmLatest() {
-  const value=execFileSync('npm',['view','webhelm','version','--json',`--registry=${REGISTRY}`,'--fetch-retries=0','--fetch-timeout=8000'],
-    {encoding:'utf8',timeout:15000,stdio:['ignore','pipe','pipe']});
-  const version=JSON.parse(value);
-  compareVersions(version,version);
-  return version;
+// The Skill launcher may use a persistent npx cache with a stale packument.
+// New versions can appear in npm view yet still fail ETARGET at npm install.
+// Always query via an isolated, disposable npm cache.
+export function npmLatest({run=execFileSync}={}) {
+  const cache=fs.mkdtempSync(path.join(os.tmpdir(),'webhelm-npm-metadata-'));
+  try{
+    const value=run('npm',['view','webhelm','version','--json','--registry='+REGISTRY,
+      '--cache='+cache,'--prefer-online','--fetch-retries=0','--fetch-timeout=8000'],
+      {encoding:'utf8',timeout:15000,stdio:['ignore','pipe','pipe']});
+    const version=JSON.parse(value);
+    compareVersions(version,version);
+    return version;
+  }finally{fs.rmSync(cache,{recursive:true,force:true});}
 }
 
 // npm installs into an isolated temporary prefix; lifecycle scripts never run.
 // The existing offline staging contract (Runtime + yaml) remains unchanged.
-export function downloadRuntime(version,{home=os.homedir()}={}) {
+export function downloadRuntime(version,{home=os.homedir(),run=execFileSync}={}) {
   compareVersions(version,version);
   const cached=path.join(home,'.local/share/webhelm',`runtime-${version}`);
   try {
@@ -43,9 +50,10 @@ export function downloadRuntime(version,{home=os.homedir()}={}) {
   }catch{}
   const temp=fs.mkdtempSync(path.join(os.tmpdir(),'webhelm-npm-upgrade-'));
   try {
-    execFileSync('npm',['install','--prefix',temp,'--no-save','--omit=dev','--ignore-scripts',
+    run('npm',['install','--prefix',temp,'--no-save','--omit=dev','--ignore-scripts',
       '--no-audit','--no-fund','--package-lock=false','--fetch-retries=0',
-      `--registry=${REGISTRY}`,`webhelm@${version}`],
+      '--registry='+REGISTRY,'--cache='+path.join(temp,'.npm-cache'),
+      '--prefer-online','webhelm@'+version],
       {timeout:120000,stdio:['ignore','pipe','pipe']});
     const source=path.join(temp,'node_modules/webhelm');
     const manifest=JSON.parse(fs.readFileSync(path.join(source,'package.json'),'utf8'));
@@ -129,8 +137,17 @@ export async function upgradeRuntime({home=os.homedir(),source=SOURCE,nodePath=p
       JSON.parse(fs.readFileSync(path.join(currentTarget,'package.json'),'utf8')).version===target;
     if(upToDate&&!force)return {status:'current',upgraded:false,version:target,global_cli:migrateLegacyRuntimeCli({home})};
     // Stage before requesting the daemon to drain; download may take time.
-    const staged=compareVersions(target,local)>0
-      ? await download(target,{home}) : stageRuntimeForLoginGuard({home,source});
+    let staged;
+    try{
+      staged=compareVersions(target,local)>0
+        ? await download(target,{home}) : stageRuntimeForLoginGuard({home,source});
+    }catch(error){
+      const cause=String(error.stderr||'')+' '+String(error.message||'');
+      if(/\b(?:ETARGET|ENOVERSIONS|E404)\b/.test(cause))
+        return {status:'deferred',upgraded:false,reason:'npm_release_not_yet_resolvable',
+          latest:target,detail:'npm registry or cache has not propagated the release; retry later'};
+      throw error;
+    }
     if(!force && daemon && compareVersions(daemon.version,target)<0){
       let gate;
       try{gate=await ipc({op:'upgrade-prepare'});}

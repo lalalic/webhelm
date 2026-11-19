@@ -42,7 +42,10 @@ The Extension is bundled with the npm Runtime and staged by WebHelm Daemon at `~
 check (`com.lalalic.webhelm.keepalive`, every 30 seconds) and the npm Runtime
 updater (`com.lalalic.webhelm.runtime-update`, every hour and at login).
 The updater checks the npm registry and downloads new releases to a temporary
-location without running npm lifecycle scripts. It validates that Runtime and
+location without running npm lifecycle scripts. Each check and installation
+uses an isolated, disposable npm cache rather than a potentially stale npx
+cache. If npm release metadata has not propagated yet, it defers safely and
+retries on the next scheduled check. It validates that Runtime and
 Extension versions match, stages an immutable copy under
 `~/.local/share/webhelm/runtime-VERSION`, and uses the stable
 `~/.local/share/webhelm/runtime-current` symlink for subsequent launches.

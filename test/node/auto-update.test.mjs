@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {compareVersions,upgradeRuntime,forceStopDaemon} from '../../runtime/auto-update.mjs';
+import {compareVersions,upgradeRuntime,forceStopDaemon,npmLatest,downloadRuntime} from '../../runtime/auto-update.mjs';
 import {activateRuntime,currentRuntimePath,migrateLegacyRuntimeCli,stageRuntimeForLoginGuard,installRuntimeUpdate} from '../../runtime/login-guard.mjs';
 
 const source=fileURLToPath(new URL('../../',import.meta.url));
@@ -236,5 +236,75 @@ test('forceStopDaemon refuses wrong lock, wrong process identity, and missing IP
     }});
     assert.deepEqual(result,{stopping:true,stopped:true,pid:124});
     assert.deepEqual(signals,[[124,'SIGTERM']]);
+  }finally{fs.rmSync(home,{recursive:true,force:true});}
+});
+
+test('npm latest lookup uses a disposable cache instead of inherited stale npx cache',()=>{
+  let cachePath=null;
+  const version=npmLatest({run:(command,args)=>{
+    assert.equal(command,'npm');
+    assert.deepEqual(args.slice(0,4),['view','webhelm','version','--json']);
+    assert.ok(args.includes('--prefer-online'));
+    cachePath=args.find(item=>item.startsWith('--cache=')).slice('--cache='.length);
+    assert.ok(fs.existsSync(cachePath));
+    assert.notEqual(cachePath,process.env.npm_config_cache);
+    return JSON.stringify(newer);
+  }});
+  assert.equal(version,newer);
+  assert.equal(fs.existsSync(cachePath),false);
+});
+
+test('npm install uses a disposable cache despite stale caller npm metadata',()=>{
+  const home=tempHome();
+  try{
+    const fake=path.join(home,'fake-package');
+    fs.mkdirSync(fake,{recursive:true});
+    for(const dir of ['runtime','bin'])fs.cpSync(path.join(source,dir),path.join(fake,dir),{recursive:true});
+    const pkg=JSON.parse(fs.readFileSync(path.join(source,'package.json'),'utf8'));
+    pkg.version=newer;
+    fs.writeFileSync(path.join(fake,'package.json'),JSON.stringify(pkg));
+    const extPath=path.join(fake,'runtime/extension/manifest.json');
+    const ext=JSON.parse(fs.readFileSync(extPath,'utf8'));
+    ext.version=newer;
+    fs.writeFileSync(extPath,JSON.stringify(ext));
+    let installCache,installPrefix;
+    const result=downloadRuntime(newer,{home,run:(command,args)=>{
+      assert.equal(command,'npm');
+      assert.equal(args[0],'install');
+      assert.ok(args.includes('--prefer-online'));
+      assert.ok(args.includes('--ignore-scripts'));
+      assert.ok(args.includes('webhelm@'+newer));
+      installCache=args.find(item=>item.startsWith('--cache=')).slice('--cache='.length);
+      installPrefix=args[args.indexOf('--prefix')+1];
+      assert.ok(installCache.startsWith(installPrefix+path.sep));
+      assert.notEqual(installCache,process.env.npm_config_cache);
+      const nodeModules=path.join(installPrefix,'node_modules');
+      fs.mkdirSync(nodeModules,{recursive:true});
+      fs.cpSync(fake,path.join(nodeModules,'webhelm'),{recursive:true});
+      fs.cpSync(path.resolve(fileURLToPath(import.meta.resolve('yaml')),'../..'),
+        path.join(nodeModules,'yaml'),{recursive:true});
+      return '';
+    }});
+    assert.equal(result.version,newer);
+    assert.equal(fs.existsSync(installCache),false);
+    assert.equal(fs.existsSync(installPrefix),false);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(result.path,'package.json'),'utf8')).version,newer);
+  }finally{fs.rmSync(home,{recursive:true,force:true});}
+});
+
+test('npm ETARGET during registry propagation defers without stopping daemon',async()=>{
+  const home=tempHome();
+  try{
+    const old=stageRuntimeForLoginGuard({home,source});
+    activateRuntime(old.path,{home});
+    const {calls,options}=deps(home);
+    options.download=()=>{const error=new Error('npm install failed');error.stderr=Buffer.from('npm error code ETARGET');throw error;};
+    const result=await upgradeRuntime({...options,force:true});
+    assert.equal(result.status,'deferred');
+    assert.equal(result.reason,'npm_release_not_yet_resolvable');
+    assert.equal(result.latest,newer);
+    assert.equal(fs.realpathSync(currentRuntimePath(home)),fs.realpathSync(old.path));
+    assert.ok(!calls.includes('upgrade-prepare'));
+    assert.ok(!calls.includes('upgrade-commit'));
   }finally{fs.rmSync(home,{recursive:true,force:true});}
 });
