@@ -7,7 +7,8 @@ import { randomUUID } from 'node:crypto';
 import { ensureDaemon, request, SOCKET } from './node-daemon.mjs';
 import { PLATFORMS, listPlatforms, platformProfile, actionPath, validateConfig } from './platforms.mjs';
 import { ACTIONS_DIR, ensureActions, syncActions, publishActions } from './actions-repo.mjs';
-import { installLoginGuard, stageRuntimeForLoginGuard } from './login-guard.mjs';
+import { activateRuntime, currentRuntimePath, installLoginGuard, installRuntimeUpdate, stageRuntimeForLoginGuard } from './login-guard.mjs';
+import { upgradeRuntime } from './auto-update.mjs';
 import { cliHelp } from './cli-help.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -108,12 +109,15 @@ async function main(args = process.argv.slice(2)) {
     const repo=await ensureActions();
     const chrome=await ensureDaemon();
     const sourceMode=process.env.WEBHELM_SOURCE_MODE==='1';
+    if(!sourceMode)activateRuntime(stageRuntimeForLoginGuard().path);
     const cliPath=sourceMode
       ? fileURLToPath(new URL('../bin/webhelm.mjs',import.meta.url))
-      : path.join(stageRuntimeForLoginGuard().path,'bin/webhelm.mjs');
+      : path.join(currentRuntimePath(),'bin/webhelm.mjs');
     const login_guard=installLoginGuard({cliPath,nodePath:process.execPath,sourceMode});
-    return emit({status:'ready',...repo,daemon_pid:chrome.pid,managed_chrome:chrome.managed_chrome,login_guard});
+    const auto_update=installRuntimeUpdate({cliPath,nodePath:process.execPath,sourceMode});
+    return emit({status:'ready',...repo,daemon_pid:chrome.pid,managed_chrome:chrome.managed_chrome,login_guard,auto_update});
   }
+  if (group === 'upgrade') return emit(await upgradeRuntime());
   if (group === 'ensure') {
     try { return emit(await request({op:'guard-check'})); }
     catch(error) {
@@ -130,7 +134,12 @@ async function main(args = process.argv.slice(2)) {
   }
   if (group === 'status') {
     const daemon = await ensureDaemon();
-    return emit({version:daemon.version, platform_dir:PLATFORMS, root:ROOT,
+    const link=currentRuntimePath();
+    let installed_version=null;
+    try{installed_version=JSON.parse(fs.readFileSync(path.join(link,'package.json'),'utf8')).version;}catch{}
+    const auto_update_installed=fs.existsSync(path.join(os.homedir(),'Library/LaunchAgents/com.lalalic.webhelm.runtime-update.plist'));
+    return emit({version:daemon.version, installed_version, auto_update_installed,
+      source_mode:process.env.WEBHELM_SOURCE_MODE==='1',platform_dir:PLATFORMS, root:ROOT,
       cli:fileURLToPath(import.meta.url),
       admin_helper:process.env.WEBHELM_ADMIN_HELPER || (fs.existsSync(path.join(os.homedir(),'.agents/skills/webhelm/scripts/admin.mjs')) ? path.join(os.homedir(),'.agents/skills/webhelm/scripts/admin.mjs') : path.join(ROOT,'admin.mjs')),
       managed_chrome:daemon.managed_chrome, chrome_guard:daemon.chrome_guard,

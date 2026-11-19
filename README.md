@@ -33,7 +33,38 @@ npx --yes webhelm@latest session stop SESSION_ID
 # Long-running worker managers: session heartbeat SESSION_ID every 60 seconds
 ```
 
-Use `npx skills add lalalic/webhelm --skill webhelm` to install agent guidance. The Extension is bundled with the npm Runtime and staged by WebHelm Daemon at `~/.local/webhelm/extension`. The Skill lives **in this repo** at `skills/webhelm/SKILL.md`. No Chrome Web Store publication or manual Extension installation is required.
+Use `npx skills add lalalic/webhelm --skill webhelm` to install agent guidance.
+The Extension is bundled with the npm Runtime and staged by WebHelm Daemon at `~/.local/webhelm/extension`. The Skill lives **in this repo** at `skills/webhelm/SKILL.md`. No Chrome Web Store publication or manual Extension installation is required.
+
+### Automatic npm Runtime upgrades (macOS)
+
+`webhelm setup` installs two independent LaunchAgents: the offline Chrome health
+check (`com.lalalic.webhelm.keepalive`, every 30 seconds) and the npm Runtime
+updater (`com.lalalic.webhelm.runtime-update`, every hour and at login).
+The updater checks the npm registry and downloads new releases to a temporary
+location without running npm lifecycle scripts. It validates that Runtime and
+Extension versions match, stages an immutable copy under
+`~/.local/share/webhelm/runtime-VERSION`, and uses the stable
+`~/.local/share/webhelm/runtime-current` symlink for subsequent launches.
+The scheduled job does not depend on the npx cache. For immediate checking use
+`webhelm upgrade`; for a read-only daemon check use `webhelm status`.
+
+**No active Session is interrupted.** Before cutover, the daemon atomically
+checks that no Sessions, pending leases, IPC operations or queue workers are
+running, then pauses new browser work. New queued ChatGPT turns remain durable
+and are accepted during the short cutover. The updater switches the stable
+Runtime pointer, waits for the idle daemon to stop gracefully, starts the
+new daemon against the existing Chrome/profile/queue, and verifies its version.
+A busy daemon returns `deferred` and retries on the next scheduled run. A failed
+installation reverts the pointer and resumes the old queue. Unavailable npm or
+unrecognized old daemon upgrade protocols fail closed rather than killing a
+Session. The update log is at `~/.config/webhelm/runtime/auto-update.log`.
+
+Neo Master uses `WEBHELM_SOURCE_MODE=1` and runs its linked Git checkout, not
+a published npm package. Automatic npm updates are deliberately disabled
+there; updating a development checkout is a separate, reviewed Git operation.
+Existing npm installations need to run `webhelm setup` once after receiving
+this release to register the updater LaunchAgent.
 
 ## WebHelm Chrome Extension control panel
 

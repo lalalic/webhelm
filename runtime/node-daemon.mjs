@@ -36,6 +36,29 @@ function ownedLeaseTabIds() {
 const pending = new Map();
 let socket, nextId = 1, browserWs, connected = false, reconnecting = false, shuttingDown = false;
 let chatgptQueue, managedChrome;
+let upgradePending=false, upgradeTimeout=null, activeRequests=0, pendingSessionStarts=0;
+function releaseUpgrade() {
+  clearTimeout(upgradeTimeout); upgradeTimeout=null;
+  if(!upgradePending)return;
+  upgradePending=false;
+  if(chatgptQueue && process.env.WEBHELM_CHATGPT_QUEUE_PAUSED!=='1'){
+    chatgptQueue.started=false;
+    chatgptQueue.start();
+  }
+}
+async function prepareUpgrade() {
+  if(upgradePending)return {ok:true,deferred:true,reason:'already_preparing'};
+  // The test and gate run within one event-loop turn, before any awaited work.
+  if(activeRequests!==1 || sessions.size || pendingSessionStarts || pendingLeaseTabIds.size ||
+      controlPollActive || getChatGPTQueue().active.size)
+    return {ok:true,deferred:true,reason:'daemon_busy',session_count:sessions.size};
+  upgradePending=true;
+  await chatgptQueue.stopScheduler(); // No active worker may cross this gate.
+  upgradeTimeout=setTimeout(releaseUpgrade,60000);
+  upgradeTimeout.unref?.();
+  return {ok:true,ready:true,pid:process.pid,version:PACKAGE_VERSION};
+}
+
 let connectingBrowser=null;
 const delay = ms => new Promise(r => setTimeout(r, ms));
 
@@ -393,6 +416,9 @@ async function extensionCallSerialized(_session,method,args={}) {
 
 function jsonSafe(value){try{JSON.stringify(value);return {value}}catch{return {value_repr:String(value)}}}
 async function createSession(req={}) {
+  if(upgradePending)throw Error('WebHelm Runtime is upgrading; retry Session start');
+  pendingSessionStarts++;
+  try {
   const browser=await connectBrowser();
   const sid=crypto.randomBytes(8).toString('hex');
   const s={session_id:sid, workspace:req.workspace||await defaultWorkspaceName(), targetId:null,
@@ -430,6 +456,7 @@ async function createSession(req={}) {
     }else if(targetId)await browser.send('Target.closeTarget',{targetId}).catch(()=>{});
     throw error;
   }
+  } finally { pendingSessionStarts--; }
 }
 
 async function targetForUrl(url){for(let i=0;i<100;i++){const {targetInfos=[]}=await connectBrowser().then(b=>b.send('Target.getTargets'));const match=targetInfos.find(t=>t.type==='page'&&t.url===url);if(match)return match.targetId;await delay(50)}return null}
@@ -740,7 +767,7 @@ const siteKeepalive = createSiteKeepaliveScheduler({
   listSites:() => extensionCall(null,'workspace.control.site.list'),
   report:result => extensionCall(null,'workspace.control.site.report',result),
   canRun:async() => {
-    if (shuttingDown) return false; // Low priority: use idle browser capacity only.
+    if (shuttingDown || upgradePending) return false; // Low priority: use idle browser capacity only.
     const capacity=await workspaceCapacity();
     return Number.isInteger(capacity.available) && capacity.available > 0;
   },
@@ -752,7 +779,20 @@ const siteKeepalive = createSiteKeepaliveScheduler({
   },
 });
 
-export async function handle(req){switch(req.op){case'ping':return {ok:true,pid:process.pid,version:PACKAGE_VERSION,queue_paused:process.env.WEBHELM_CHATGPT_QUEUE_PAUSED==='1',session_count:sessions.size,managed_chrome:managedChrome||{profile_dir:PROFILE_DIR, endpoint:process.env.WEBHELM_CDP_URL||'http://127.0.0.1:9222',reused:true},chrome_guard:managedChromeGuard.status()};case'guard-check':{let status=await managedChromeGuard.tick();for(let retry=0;retry<6 && status.status!=='healthy' && !status.skipped;retry++){await delay(800);status=await managedChromeGuard.tick();}if(status.status!=='healthy' && !status.skipped)throw Error(`WebHelm Chrome health degraded: ${status.error||status.status}`);return {ok:true,chrome_guard:status};}case'heartbeat':return heartbeatSession(req.session_id);case'list':return {session_count:sessions.size,sessions:[...sessions.values()].map(s=>({session_id:s.session_id,workspace:s.workspace,target_id:s.targetId,last_used_at:s.last_used_at}))};case'start':return createSession(req);case'exec':return execute(req);case'stop':return stopSession(req.session_id);case'stop-all':return stopAllSessions();case'stop-workspace':{if(typeof req.workspace!=='string'||!req.workspace.trim())throw Error('workspace required');return stopWorkspaceSessions(req.workspace)}case'capacity':return workspaceCapacity(req);case'workspace-create':case'workspace-configure':case'workspace-resize':case'workspace-delete':return workspaceOp(req);case'chatgpt-new-turn-enqueue':return getChatGPTQueue().enqueue(req.config);case'queue-list':return getChatGPTQueue().list();case'queue-cancel':return getChatGPTQueue().cancel(req.queue_id);case'platform-run':return runPlatform(req);default:throw Error(`unknown op: ${req.op}`)}}
+export async function handle(req){
+  if(upgradePending && !['ping','upgrade-release','upgrade-commit',
+    'chatgpt-new-turn-enqueue','queue-list','queue-cancel'].includes(req.op))
+    throw Error('WebHelm Runtime upgrade in progress; retry request');
+  switch(req.op){
+  case'upgrade-prepare':return prepareUpgrade();
+  case'upgrade-release':releaseUpgrade();return {ok:true,released:true};
+  case'upgrade-commit':{
+    if(!upgradePending)throw Error('Runtime upgrade has not been prepared');
+    clearTimeout(upgradeTimeout);upgradeTimeout=null;
+    setTimeout(()=>process.kill(process.pid,'SIGTERM'),150).unref();
+    return {ok:true,stopping:true,pid:process.pid};
+  }
+  case'ping':return {ok:true,pid:process.pid,version:PACKAGE_VERSION,queue_paused:process.env.WEBHELM_CHATGPT_QUEUE_PAUSED==='1',session_count:sessions.size,managed_chrome:managedChrome||{profile_dir:PROFILE_DIR, endpoint:process.env.WEBHELM_CDP_URL||'http://127.0.0.1:9222',reused:true},chrome_guard:managedChromeGuard.status()};case'guard-check':{let status=await managedChromeGuard.tick();for(let retry=0;retry<6 && status.status!=='healthy' && !status.skipped;retry++){await delay(800);status=await managedChromeGuard.tick();}if(status.status!=='healthy' && !status.skipped)throw Error(`WebHelm Chrome health degraded: ${status.error||status.status}`);return {ok:true,chrome_guard:status};}case'heartbeat':return heartbeatSession(req.session_id);case'list':return {session_count:sessions.size,sessions:[...sessions.values()].map(s=>({session_id:s.session_id,workspace:s.workspace,target_id:s.targetId,last_used_at:s.last_used_at}))};case'start':return createSession(req);case'exec':return execute(req);case'stop':return stopSession(req.session_id);case'stop-all':return stopAllSessions();case'stop-workspace':{if(typeof req.workspace!=='string'||!req.workspace.trim())throw Error('workspace required');return stopWorkspaceSessions(req.workspace)}case'capacity':return workspaceCapacity(req);case'workspace-create':case'workspace-configure':case'workspace-resize':case'workspace-delete':return workspaceOp(req);case'chatgpt-new-turn-enqueue':return getChatGPTQueue().enqueue(req.config);case'queue-list':return getChatGPTQueue().list();case'queue-cancel':return getChatGPTQueue().cancel(req.queue_id);case'platform-run':return runPlatform(req);default:throw Error(`unknown op: ${req.op}`)}}
 export function serve(conn) {
   let buffer = '', dispatched = false;
   conn.on('error',()=>{ /* A disconnected client must not crash the daemon. */ });
@@ -769,12 +809,13 @@ export function serve(conn) {
     if (newline < 0 || dispatched) return;
     dispatched=true;
     const raw = buffer.slice(0, newline);
+    activeRequests++;
     try {
       const reply = await handle(JSON.parse(raw));
       if(!conn.destroyed)conn.end(JSON.stringify(reply) + '\n');
     } catch (error) {
       if(!conn.destroyed)conn.end(JSON.stringify({ error: `${error.name}: ${error.message}` }) + '\n');
-    }
+    } finally { activeRequests--; }
   });
 }
 

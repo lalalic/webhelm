@@ -5,6 +5,7 @@ import {execFileSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 
 const LABEL='com.lalalic.webhelm.keepalive';
+const UPDATE_LABEL='com.lalalic.webhelm.runtime-update';
 // launchd must never depend on npm's removable npx cache, or on the Skill
 // launcher being present. Stage an immutable, package-backed runtime locally.
 export function stageRuntimeForLoginGuard({home=os.homedir(),source=fileURLToPath(new URL('../',import.meta.url)),yamlSource=null}={}){
@@ -78,4 +79,64 @@ export function installLoginGuard({home=os.homedir(), platform=process.platform,
       return {status:'active',path:dest,updated,label:LABEL};
     }catch(e){return {status:'staged_not_loaded',path:dest,label:LABEL,reason:e.message};}
   }
+}
+
+// The npm poller is separate from the offline, 30-second Chrome health guard.
+// It is pinned to a staged Runtime and never relies on a removable npx cache.
+export function runtimeUpdateDefinition(home=os.homedir(),{cliPath,nodePath}={}) {
+  const cli=cliPath||path.join(home,'.local/bin/webhelm');
+  const node=nodePath||process.execPath;
+  const environment=[path.join(home,'.local/bin'),path.join(home,'.local/opt/node22/bin'),
+    '/opt/homebrew/bin','/usr/local/bin','/usr/bin','/bin'].join(':');
+  const log=path.join(home,'.config/webhelm/runtime/auto-update.log');
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>\n<key>Label</key><string>${UPDATE_LABEL}</string>\n<key>ProgramArguments</key><array><string>${escapeXml(node)}</string><string>${escapeXml(cli)}</string><string>upgrade</string></array>\n<key>EnvironmentVariables</key><dict><key>PATH</key><string>${escapeXml(environment)}</string><key>HOME</key><string>${escapeXml(home)}</string></dict>\n<key>RunAtLoad</key><true/>\n<key>StartInterval</key><integer>3600</integer>\n<key>StandardOutPath</key><string>${escapeXml(log)}</string>\n<key>StandardErrorPath</key><string>${escapeXml(log)}</string>\n</dict></plist>\n`;
+}
+
+export function installRuntimeUpdate({home=os.homedir(),platform=process.platform,apply=true,cliPath,nodePath,sourceMode=false}={}) {
+  if(sourceMode)return {status:'disabled',reason:'source_checkout',label:UPDATE_LABEL};
+  if(platform!=='darwin')return {status:'unsupported',label:UPDATE_LABEL};
+  const cli=cliPath||path.join(home,'.local/bin/webhelm');
+  if(!fs.existsSync(cli))return {status:'skipped',reason:'WebHelm runtime launcher missing',label:UPDATE_LABEL};
+  const dest=path.join(home,'Library/LaunchAgents',`${UPDATE_LABEL}.plist`);
+  const content=runtimeUpdateDefinition(home,{cliPath:cli,nodePath});
+  fs.mkdirSync(path.dirname(dest),{recursive:true});
+  fs.mkdirSync(path.join(home,'.config/webhelm/runtime'),{recursive:true,mode:0o700});
+  if(fs.existsSync(dest)&&!fs.readFileSync(dest,'utf8').includes(`<string>${UPDATE_LABEL}</string>`))
+    throw Error(`Refusing to replace unrelated LaunchAgent: ${dest}`);
+  const updated=!fs.existsSync(dest)||fs.readFileSync(dest,'utf8')!==content;
+  if(updated){const tmp=dest+`.${process.pid}.tmp`;fs.writeFileSync(tmp,content,{mode:0o600});fs.renameSync(tmp,dest);}
+  if(!apply)return {status:'staged',path:dest,updated,label:UPDATE_LABEL};
+  const service=`gui/${process.getuid()}/${UPDATE_LABEL}`;
+  try {
+    execFileSync('launchctl',['print',service],{timeout:5000,stdio:'ignore'});
+    if(updated){
+      execFileSync('launchctl',['bootout',service],{timeout:5000,stdio:'ignore'});
+      execFileSync('launchctl',['bootstrap',`gui/${process.getuid()}`,dest],{timeout:5000,stdio:'ignore'});
+    }
+    return {status:'active',path:dest,updated,label:UPDATE_LABEL};
+  }catch{
+    try{execFileSync('launchctl',['bootstrap',`gui/${process.getuid()}`,dest],{timeout:5000,stdio:'ignore'});
+      return {status:'active',path:dest,updated,label:UPDATE_LABEL};}
+    catch(error){return {status:'staged_not_loaded',path:dest,label:UPDATE_LABEL,reason:error.message};}
+  }
+}
+
+export function currentRuntimePath(home=os.homedir()) {
+  return path.join(home,'.local/share/webhelm/runtime-current');
+}
+
+// Atomic pointer swap: version directories remain immutable, so a running
+// daemon or CLI can finish on its original files while future invocations
+// start from the new version. Never replace a user-owned directory.
+export function activateRuntime(stagedPath,{home=os.homedir()}={}) {
+  const current=currentRuntimePath(home);
+  if(!fs.existsSync(path.join(stagedPath,'bin/webhelm.mjs')))throw Error('Missing staged WebHelm Runtime CLI');
+  if(fs.existsSync(current)&&!fs.lstatSync(current).isSymbolicLink())
+    throw Error(`Refusing to replace unmanaged Runtime directory: ${current}`);
+  if(fs.existsSync(current)&&fs.realpathSync(current)===fs.realpathSync(stagedPath))return {path:current,updated:false};
+  fs.mkdirSync(path.dirname(current),{recursive:true,mode:0o700});
+  const temp=`${current}.${process.pid}.${Date.now()}.tmp`;
+  fs.symlinkSync(stagedPath,temp,'dir');
+  try{fs.renameSync(temp,current);}finally{if(fs.existsSync(temp))fs.unlinkSync(temp);}
+  return {path:current,updated:true};
 }
