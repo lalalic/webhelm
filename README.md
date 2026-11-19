@@ -76,12 +76,14 @@ this release to register the updater LaunchAgent. The setup and updater also
 migrate only legacy global CLI symlinks that target an owned immutable
 `runtime-VERSION/bin/webhelm.mjs` into the stable Runtime link.
 
-ChatGPT long-turn transport preserves a leading `<top-instructions>` block
-and its `Neo model request: resp_...` ID in the visible composer when the
-complete message must be attached as `prompt.md` (>2,000 characters). This
-avoids hiding the model reporting contract in an unread attachment. The
-original full message is still attached exactly, and ordinary long prompts
-retain the existing short `Read prompt.md` composer text.
+ChatGPT `newThread` / `newTurn` accept optional `enforcement_context` for
+per-request requirements. WebHelm does not parse the contents or know the
+caller's protocol; it wraps the provided text in `<top-instructions>` before
+the actual `message`. If the combined text exceeds 2,000 characters, WebHelm
+uploads the exact original `message` as `prompt.md` and keeps the optional
+context in the visible composer before `Read prompt.md...`. Omitting the
+option preserves the old short composer and attachment behavior. Durable
+queued `newTurn` persists the context and checks it for idempotency.
 
 ## WebHelm Chrome Extension control panel
 

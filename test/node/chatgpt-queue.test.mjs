@@ -640,19 +640,21 @@ test("following messages wait while ChatGPT is still generating",async(t)=>{
 });
 
 
-test("long queued Turn keeps top-instructions in visible composer while full original is in prompt.md",async t=>{
-  const {readFileSync}=await import("node:fs");
+test("durable queued Turn persists optional enforcement_context and sends context with long prompt.md",async t=>{
+  const {readFileSync}=await import('node:fs');
   const {q,root}=fixture();
   t.after(async()=>{await q.shutdown();rmSync(root,{recursive:true,force:true})});
   const id='resp_'+'3'.repeat(40);
-  const instructions='<top-instructions>\nCall chat_report(text), heartbeat, and completed:true separately.\n</top-instructions>';
-  const original=instructions+'\n\nNeo model request: '+id+'\n\n[USER]\n'+'x'.repeat(4200)+'\n[/USER]';
+  const context='Call chat_report with completed:true separately.\nNeo model request: '+id;
+  const original='[USER]\n'+'x'.repeat(4200)+'\n[/USER]';
   const {deliveryMessage}=await import('../../runtime/chatgpt/chatgpt-probe.mjs');
-  const expected=deliveryMessage(original);
+  const expected=deliveryMessage(original,context);
   assert.match(expected,/^<top-instructions>/);
   assert.match(expected,/Neo model request: resp_[a-f0-9]{40}/);
   assert.ok(expected.length<=2000);
-  const queueId=q.enqueue({thread_id:'thread-top-contract',message:original,idempotency_key:'top-contract'}).queue_id;
+  const queueId=q.enqueue({thread_id:'thread-top-contract',message:original,enforcement_context:context,idempotency_key:'top-contract'}).queue_id;
+  assert.equal(q.rows()[0].enforcement_context,context);
+  assert.throws(()=>q.enqueue({thread_id:'thread-top-contract',message:original,enforcement_context:'different',idempotency_key:'top-contract'}),/different payload/);
   q.sessions.set(queueId,'top-contract-session');
   let calls=0;
   q._exec=async(_sid,source)=>{
@@ -662,12 +664,59 @@ test("long queued Turn keeps top-instructions in visible composer while full ori
       assert.equal(readFileSync(files.at(-1),'utf8'),original);
       return {ready:true};
     }
-    assert.ok(source.includes(JSON.stringify(expected.replace(/\s+/g,' ').trim())),'submits bounded inline contract + reference');
+    assert.ok(source.includes(JSON.stringify(expected.replace(/\s+/g,' ').trim())),'submits the bounded enforcement context');
     assert.ok(!source.includes('x'.repeat(300)),'does not echo the full user task');
     return {verified_by:'user-turn'};
   };
-  const result=await q._send(q.rows()[0]);
-  assert.equal(result.verified_by,'user-turn');
+  assert.equal((await q._send(q.rows()[0])).verified_by,'user-turn');
   assert.equal(calls,2);
-  assert.equal(q.rows()[0].message,original);
+});
+
+test("optional enforcement_context leaves legacy queued deliveries unchanged",async t=>{
+  const {deliveryMessage}=await import('../../runtime/chatgpt/chatgpt-probe.mjs');
+  assert.equal(deliveryMessage('hello'),'hello');
+  assert.equal(deliveryMessage('x'.repeat(2001)),'Read prompt.md and execute the task in that file.');
+  assert.equal(deliveryMessage('hello','Do the thing').startsWith('<top-instructions>'),true);
+  const {q,root}=fixture();t.after(async()=>{await q.shutdown();rmSync(root,{recursive:true,force:true})});
+  q.enqueue({thread_id:'t',message:'hello',idempotency_key:'k'});
+  assert.equal(q.rows()[0].enforcement_context,'');
+  assert.throws(()=>q.enqueue({thread_id:'t',message:'hello',idempotency_key:'k',enforcement_context:'new'}),/different payload/);
+});
+
+test('existing durable queue database migrates to optional enforcement_context without losing historical entries',async t=>{
+  const {DatabaseSync}=await import('node:sqlite');
+  const root=mkdtempSync(join(tmpdir(),'chatgpt-legacy-enforcement-'));
+  t.after(()=>rmSync(root,{recursive:true,force:true}));
+  const path=join(root,'chatgpt-new-turn.sqlite3');
+  const db=new DatabaseSync(path);
+  db.exec(`CREATE TABLE turns(seq INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT NOT NULL UNIQUE,idem_key TEXT NOT NULL UNIQUE,project_id TEXT,thread_id TEXT NOT NULL,message TEXT NOT NULL,state TEXT NOT NULL,lease_owner TEXT,lease_until REAL,next_check_at REAL NOT NULL,created_at REAL NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,receipt TEXT,mergeable INTEGER NOT NULL DEFAULT 0,files_json TEXT NOT NULL DEFAULT '[]');
+    CREATE TABLE merged_requests(idem_key TEXT PRIMARY KEY,project_id TEXT,thread_id TEXT NOT NULL,message TEXT NOT NULL,queue_id TEXT NOT NULL);`);
+  db.prepare("INSERT INTO turns(id,idem_key,project_id,thread_id,message,state,next_check_at,created_at,mergeable) VALUES(?, ?, NULL, ?, ?, 'QUEUED', 100, 100, 0)").run('old-id','old-key','old-thread','old message');
+  db.close();
+  const q=new ChatGPTQueue({persistenceRoot:root,
+    startSession:async()=>({session_id:'mock'}),execSession:async()=>({}),stopSession:async()=>{},now:()=>100});
+  t.after(async()=>q.shutdown());
+  assert.equal(q.rows()[0].enforcement_context,'');
+  assert.equal(q.rows()[0].message,'old message');
+  const fresh=q.enqueue({thread_id:'new-thread',message:'new message',enforcement_context:'Must report completion',idempotency_key:'new-key'});
+  assert.equal(q.rows().find(x=>x.id===fresh.queue_id).enforcement_context,'Must report completion');
+  assert.equal(q.enqueue({thread_id:'old-thread',message:'old message',idempotency_key:'old-key'}).queue_id,'old-id');
+});
+
+test('mergeable queued Turns never combine distinct enforcement contexts',async t=>{
+  const {q,root}=fixture();
+  t.after(async()=>{await q.shutdown();rmSync(root,{recursive:true,force:true})});
+  const a=q.enqueue({thread_id:'one',message:'first',enforcement_context:'contract-A',idempotency_key:'1',mergeable:true});
+  const b=q.enqueue({thread_id:'one',message:'second',enforcement_context:'contract-B',idempotency_key:'2',mergeable:true});
+  assert.notEqual(a.queue_id,b.queue_id);
+  const c=q.enqueue({thread_id:'one',message:'third',enforcement_context:'contract-B',idempotency_key:'3',mergeable:true});
+  assert.equal(c.queue_id,b.queue_id);
+  assert.deepEqual(q.rows().map(x=>({text:x.message,contract:x.enforcement_context})),[
+    {text:'first',contract:'contract-A'},
+    {text:'second\nthird',contract:'contract-B'},
+  ]);
+  assert.throws(()=>q.enqueue({thread_id:'one',message:'third',enforcement_context:'contract-A',idempotency_key:'3',mergeable:true}),/different payload/);
+  assert.throws(()=>q.enqueue({thread_id:'one',message:'bad',enforcement_context:'x'.repeat(1501),idempotency_key:'bad'}),/enforcement_context/);
+  const empty=q.enqueue({thread_id:'new',message:'ok',enforcement_context:null,idempotency_key:'null'});
+  assert.equal(q.rows().find(x=>x.id===empty.queue_id).enforcement_context,'');
 });

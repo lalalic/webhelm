@@ -4,7 +4,7 @@ import { join, resolve, isAbsolute } from "node:path";
 import { tmpdir } from "node:os";
 import { attachmentUploadScript } from "./attachment-upload.mjs";
 import { createHash, randomUUID } from "node:crypto";
-import { classifyProbe, PROBE_JS, targetUrl, deliveryMessage, PROMPT_FILE_THRESHOLD } from "./chatgpt-probe.mjs";
+import { classifyProbe, PROBE_JS, targetUrl, deliveryMessage, requiresPromptFile, enforcementContext } from "./chatgpt-probe.mjs";
 import { SEND_ENABLED_JS } from "./lifecycle-common.mjs";
 import { submissionScript } from "./submission-script.mjs";
 import { DurableQueueCore } from "../durable-queue-core.mjs";
@@ -27,7 +27,9 @@ const chatgptQueuePolicy = {
   one(db, sql, ...args) { return db.prepare(sql).get(...args) || null; },
   rows(db) { return db.prepare("SELECT * FROM turns ORDER BY seq").all(); },
   enqueue(db, request = {}, now) {
-    const {thread_id, message, idempotency_key, idempotencyKey, project_id=null, mergeable=false, file=[]} = request;
+    const {thread_id, message, idempotency_key, idempotencyKey, project_id=null, mergeable=false, file=[], enforcement_context:rawContext=''} = request;
+    const enforcement_context=rawContext??'';
+    enforcementContext(enforcement_context);
     if (!Array.isArray(file) || file.length > 4 ||
         file.some(p => typeof p !== "string" || !isAbsolute(p) ||
           !existsSync(p) || !statSync(p).isFile())) {
@@ -40,19 +42,19 @@ const chatgptQueuePolicy = {
     if (typeof mergeable !== "boolean") throw new TypeError("mergeable must be a boolean");
     const merged=this.one(db, "SELECT * FROM merged_requests WHERE idem_key=?", key);
     if (merged) {
-      if (merged.thread_id!==thread_id || merged.message!==message || merged.project_id!==project_id || filesJson!=="[]") throw new Error("idempotency key reused with different payload");
       const row=this.one(db, "SELECT * FROM turns WHERE id=?", merged.queue_id);
+      if (merged.thread_id!==thread_id || merged.message!==message || merged.project_id!==project_id || filesJson!=="[]" || row.enforcement_context!==enforcement_context) throw new Error("idempotency key reused with different payload");
       return {ok:true,status:"queued",queue_id:row.id,thread_id:row.thread_id,state:row.state};
     }
     const same=this.one(db, "SELECT * FROM turns WHERE idem_key=?", key);
     if (same) {
-      if (same.thread_id!==thread_id || same.message!==message || same.project_id!==project_id || (same.files_json||"[]")!==filesJson) throw new Error("idempotency key reused with different payload");
+      if (same.thread_id!==thread_id || same.message!==message || same.project_id!==project_id || same.enforcement_context!==enforcement_context || (same.files_json||"[]")!==filesJson) throw new Error("idempotency key reused with different payload");
       return {ok:true,status:"queued",queue_id:same.id,thread_id:same.thread_id,state:same.state};
     }
     const tail=mergeable ? this.one(db, "SELECT * FROM turns WHERE thread_id=? ORDER BY seq DESC LIMIT 1", thread_id) : null;
     // WAITING denotes admitted work being retried; only QUEUED is cancellable
     // and eligible for a new enqueue-time merge.
-    if (tail && tail.mergeable && tail.project_id===project_id && tail.state==="QUEUED") {
+    if (tail && tail.mergeable && tail.project_id===project_id && tail.enforcement_context===enforcement_context && tail.state==="QUEUED") {
       db.prepare("INSERT OR IGNORE INTO merged_requests VALUES(?,?,?,?,?)").run(tail.idem_key,tail.project_id,thread_id,tail.message,tail.id);
       db.prepare("INSERT INTO merged_requests VALUES(?,?,?,?,?)").run(key,project_id,thread_id,message,tail.id);
       db.prepare("UPDATE turns SET message=message || ? WHERE id=?").run("\n"+message,tail.id);
@@ -60,7 +62,7 @@ const chatgptQueuePolicy = {
       return {ok:true,status:"queued",queue_id:row.id,thread_id:row.thread_id,state:row.state};
     }
     const id=randomUUID();
-    db.prepare("INSERT INTO turns(id,idem_key,project_id,thread_id,message,state,next_check_at,created_at,mergeable,files_json) VALUES(?,?,?,?,?,'QUEUED',?,?,?,?)").run(id,key,project_id,thread_id,message,now,now,mergeable?1:0,filesJson);
+    db.prepare("INSERT INTO turns(id,idem_key,project_id,thread_id,message,enforcement_context,state,next_check_at,created_at,mergeable,files_json) VALUES(?,?,?,?,?,?,'QUEUED',?,?,?,?)").run(id,key,project_id,thread_id,message,enforcement_context,now,now,mergeable?1:0,filesJson);
     return {ok:true,status:"queued",queue_id:id,thread_id,state:"QUEUED"};
   },
   claim(db, owner, now, leaseSeconds) {
@@ -130,9 +132,11 @@ export class ChatGPTQueue extends DurableQueueCore {
     db.exec(
       `CREATE TABLE IF NOT EXISTS turns(seq INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT NOT NULL UNIQUE,idem_key TEXT NOT NULL UNIQUE,project_id TEXT,thread_id TEXT NOT NULL,message TEXT NOT NULL,state TEXT NOT NULL,lease_owner TEXT,lease_until REAL,next_check_at REAL NOT NULL,created_at REAL NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,receipt TEXT,mergeable INTEGER NOT NULL DEFAULT 0); CREATE INDEX IF NOT EXISTS turns_thread_order ON turns(thread_id,seq); CREATE TABLE IF NOT EXISTS merged_requests(idem_key TEXT PRIMARY KEY,project_id TEXT,thread_id TEXT NOT NULL,message TEXT NOT NULL,queue_id TEXT NOT NULL);`,
     );
-    if (!db.prepare("PRAGMA table_info(turns)").all().some(row => row.name === "files_json")) {
+    const columns = db.prepare("PRAGMA table_info(turns)").all().map(row=>row.name);
+    if (!columns.includes('files_json'))
       db.exec("ALTER TABLE turns ADD COLUMN files_json TEXT NOT NULL DEFAULT '[]'");
-    }
+    if (!columns.includes('enforcement_context'))
+      db.exec("ALTER TABLE turns ADD COLUMN enforcement_context TEXT NOT NULL DEFAULT ''");
     super(db, chatgptQueuePolicy, now, {
       concurrency: Math.min(4, Math.max(1, Number(concurrency) || 4)), intervalMs,
     });
@@ -220,7 +224,7 @@ export class ChatGPTQueue extends DurableQueueCore {
     return response?.value ?? response;
   }
   async _probe(item) {
-    const url = targetUrl(item.project_id, item.thread_id, item.message);
+    const url = targetUrl(item.project_id, item.thread_id, item.message, item.enforcement_context);
     const session = await this.startSession({ url });
     const sid = session.session_id ?? session.sessionId;
     if (!sid) throw new Error("session start returned no session_id");
@@ -247,7 +251,7 @@ export class ChatGPTQueue extends DurableQueueCore {
     const attachments = JSON.parse(item.files_json || "[]");
     let tempDir;
     try {
-      if (item.message.length > PROMPT_FILE_THRESHOLD) {
+      if (requiresPromptFile(item.message,item.enforcement_context)) {
         tempDir = mkdtempSync(join(tmpdir(), "webhelm-prompt-"));
         const promptPath = join(tempDir, "prompt.md");
         writeFileSync(promptPath, item.message, {encoding:"utf8",mode:0o600});
@@ -257,7 +261,7 @@ export class ChatGPTQueue extends DurableQueueCore {
         const upload = await this._exec(sid, attachmentUploadScript(attachments));
         if (!upload?.ready) throw new Error("ChatGPT attachments not ready for Send");
       }
-      return await this._exec(sid, submissionScript({...item, message:deliveryMessage(item.message)}));
+      return await this._exec(sid, submissionScript({...item, message:deliveryMessage(item.message,item.enforcement_context)}));
     } finally {
       if (tempDir) rmSync(tempDir, {recursive:true,force:true});
     }
