@@ -963,3 +963,53 @@ test('orphan recovery refuses to touch tabs while daemon ownership is unavailabl
   assert.deepEqual(await manager.recoverConfiguredOrphans(),[]);
   assert.equal((await chrome.tabs.get(blank.id)).url,'about:blank');
 });
+
+test('extension only leases verified WebHelm idle tabs, never marker or pending-navigation tabs',async()=>{
+  const chrome=fakeChrome(),manager=new WorkspaceManager(chrome);
+  const group=await manager.create('WebHelm',1);
+  const tabId=group.tabIds[0];
+  const marker=chrome.runtime.getURL('helm.html?workspace=WebHelm&role=marker');
+  await chrome.tabs.update(tabId,{url:marker});
+  await assert.rejects(()=>manager.acquireIdentity('WebHelm'),/pool is exhausted/);
+  assert.equal((await chrome.tabs.get(tabId)).url,marker);
+
+  await chrome.tabs.update(tabId,{url:manager.idleUrl('WebHelm')});
+  const query=chrome.tabs.query.bind(chrome.tabs);
+  chrome.tabs.query=async options=>(await query(options)).map(tab=>
+    tab.id===tabId?{...tab,pendingUrl:'https://example.com/pending-navigation'}:tab);
+  await assert.rejects(()=>manager.acquireIdentity('WebHelm'),/pool is exhausted/);
+  chrome.tabs.query=query;
+  const lease=await manager.acquireIdentity('WebHelm');
+  assert.equal(lease.tabId,tabId);
+  assert.equal((await chrome.tabs.get(tabId)).url,lease.identityUrl);
+});
+
+test('extension never re-leases role=idle tab still held by live daemon Session',async()=>{
+  const chrome=fakeChrome(),manager=new WorkspaceManager(chrome);
+  const group=await manager.create('WebHelm',1);
+  const tabId=group.tabIds[0];
+  // Chrome may still show the old idle URL after a daemon Session owns the tab.
+  manager.setOwnershipProvider(async()=>[{session_id:'live',workspace:'WebHelm',tabId,tabIds:[tabId]}]);
+  await assert.rejects(()=>manager.acquireIdentity('WebHelm'),/pool is exhausted/);
+  assert.equal((await chrome.tabs.get(tabId)).url,manager.idleUrl('WebHelm'));
+
+  manager.setOwnershipProvider(async()=>[]);
+  const lease=await manager.acquireIdentity('WebHelm');
+  assert.equal(lease.tabId,tabId,'reuse only after Session actually releases its lease');
+});
+
+test('daemon-provided active and pending tab IDs cannot be double-allocated',async()=>{
+  const chrome=fakeChrome(),manager=new WorkspaceManager(chrome);
+  const group=await manager.create('WebHelm',3);
+  const oldId=group.tabIds[0];
+  manager.setOwnershipProvider(async()=>null,'daemon Session snapshot is stale');
+  const first=await manager.acquireIdentity('WebHelm',[oldId]);
+  assert.notEqual(first.tabId,oldId,'reserved idle-looking tab must be skipped');
+  assert.equal((await chrome.tabs.get(oldId)).url,manager.idleUrl('WebHelm'));
+  const second=await manager.acquireIdentity('WebHelm',[oldId,first.tabId]);
+  assert.notEqual(second.tabId,oldId);
+  assert.notEqual(second.tabId,first.tabId);
+  await assert.rejects(()=>manager.acquireIdentity('WebHelm',[oldId,first.tabId,second.tabId]),/pool is exhausted/);
+  const originals=[oldId,first.tabId,second.tabId];
+  assert.equal(new Set(originals).size,3);
+});

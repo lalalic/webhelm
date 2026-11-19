@@ -11,7 +11,7 @@ class FakeBrowser extends EventTarget {
   static OPEN=1;
   readyState=0;
   static inst;
-  constructor(){super();FakeBrowser.inst=this;this.targets=[{targetId:'worker',type:'service_worker',url:'chrome-extension://kkkpgmhpoeceojalkpfdidffdfnlgdog/service-worker.mjs'},{targetId:'control',type:'page',url:base},{targetId:'slot1',type:'page',url:idle(1)}];this.attachments=new Map();this.nextAttachment=0;this.nextTab=1;this.operations=[];queueMicrotask(()=>{this.readyState=1;this.dispatchEvent(new Event('open'))});}
+  constructor(){super();FakeBrowser.inst=this;this.targets=[{targetId:'worker',type:'service_worker',url:'chrome-extension://kkkpgmhpoeceojalkpfdidffdfnlgdog/service-worker.mjs'},{targetId:'control',type:'page',url:base},{targetId:'slot1',type:'page',url:idle(1)}];this.attachments=new Map();this.nextAttachment=0;this.nextTab=1;this.operations=[];this.leaseExclusions=[];queueMicrotask(()=>{this.readyState=1;this.dispatchEvent(new Event('open'))});}
   send(data){
     const req=JSON.parse(data),{method,params={},sessionId}=req;
     let result={};
@@ -35,7 +35,10 @@ class FakeBrowser extends EventTarget {
         const prefix=src.startsWith('globalThis')?'globalThis.browserWorkspaceManagerRpc(':'chrome.runtime.sendMessage(';
         const request=JSON.parse(src.slice(prefix.length,-1));
         if(request.method==='workspace.acquireIdentity'){
-          let tab=this.targets.find(t=>t.type==='page'&&/role=idle/.test(t.url));
+          const excluded=request.args?.excludedTabIds??[];
+          this.leaseExclusions.push([...excluded]);
+          let tab=this.targets.find(t=>t.type==='page'&&/role=idle/.test(t.url)&&
+            !excluded.includes(Number(t.targetId.replace('slot',''))));
           if(!tab){const id=++this.nextTab;tab={targetId:`slot${id}`,type:'page',url:idle(id)};this.targets.push(tab);}
           const id=Number(tab.targetId.replace('slot',''));tab.url=lease(id);
           result={result:{value:{ok:true,result:{workspace:'Harness',tabId:id,identityUrl:lease(id),idleUrl:idle(id)}}}};
@@ -60,6 +63,15 @@ test('session lifecycle: managed stop reuses physical tab; orphan reclaimed; hea
     const a=await handle({op:'start',url:'https://test.invalid/a'});
     const browser=FakeBrowser.inst;
     assert.equal(a.target_id,'slot1');
+    // Simulate Chrome briefly exposing an old idle URL on an already owned
+    // target. The daemon must send its current Session tab IDs to the extension.
+    browser.targets.find(t=>t.targetId==='slot1').url=idle(1);
+    const overlap=await handle({op:'start',url:'https://test.invalid/overlap'});
+    assert.notEqual(overlap.target_id,a.target_id,
+      'a target owned by another Session can never be reused as idle');
+    assert.ok(browser.leaseExclusions.at(-1).includes(1),
+      'daemon passes active tab IDs to extension acquisition');
+    await handle({op:'stop',session_id:overlap.session_id});
     const stopA=await handle({op:'stop',session_id:a.session_id});
     assert.equal(stopA.returned_to_idle,true);
     assert.equal(browser.targets.find(t=>t.targetId==='slot1')?.url,idle(1));

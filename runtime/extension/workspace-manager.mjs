@@ -479,15 +479,50 @@ export class WorkspaceManager {
     return await this.inheritWorkspaceForCreatedTab(tab);
   }
 
+  // A group membership or an old "marker" URL is not a free lease. The
+  // actual extension idle page must be visible, with no navigation pending.
+  isIdleWorkspaceTab(name, tab) {
+    const meta = this.parseManagedUrl(this.tabUrl(tab));
+    return meta?.workspace === name && meta.role === "idle" &&
+      !this.inFlightTabIds.has(tab.id) && !tab.pendingUrl &&
+      tab.status !== "loading";
+  }
+
   classify(name, tabs) {
-    const idle = [];
-    const leased = [];
+    const idle = [], leased = [];
     for (const tab of tabs) {
-      const meta = this.parseManagedUrl(tab.url || "");
-      if (meta?.workspace === name && ["idle", "marker"].includes(meta.role)) idle.push(tab);
-      else leased.push(tab);
+      (this.isIdleWorkspaceTab(name, tab) ? idle : leased).push(tab);
     }
     return { idle, leased };
+  }
+
+  async occupiedSessionTabIds(excludedTabIds = []) {
+    const ids = new Set(excludedTabIds.map(Number).filter(Number.isInteger));
+    // The daemon supplies the current leases with each allocation RPC; its
+    // live Session table is authoritative even if Chrome still shows idle.
+    // Include the extension control snapshot as an additional safety fence.
+    const sessions = await this.getDaemonSessions();
+    if (Array.isArray(sessions)) {
+      for (const session of sessions) {
+        for (const id of [session.tabId, ...(session.tabIds || [])]) {
+          if (Number.isInteger(Number(id)) && id !== null) ids.add(Number(id));
+        }
+      }
+    }
+    return ids;
+  }
+
+  async waitForIdentityTab(tabId, workspace, timeoutMs = 3000) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const tab = await this.chrome.tabs.get(tabId);
+      const meta = this.parseManagedUrl(this.tabUrl(tab));
+      if (meta?.workspace === workspace && meta.role === "lease" &&
+          meta.tabId === String(tabId) && !tab.pendingUrl) return tab;
+      if (Date.now() >= deadline)
+        throw new Error(`Timed out waiting for workspace ${workspace} lease identity ${tabId}`);
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
   }
 
   async waitForIdleTab(tabId, workspace, timeoutMs = 3000) {
@@ -495,8 +530,7 @@ export class WorkspaceManager {
     for (;;) {
       const tabs = await this.chrome.tabs.query({});
       const tab = tabs.find((candidate) => candidate.id === tabId);
-      const meta = this.parseManagedUrl(tab?.url || "");
-      if (tab && meta?.workspace === workspace && meta.role === "idle") return tab;
+      if (tab && this.isIdleWorkspaceTab(workspace, tab)) return tab;
       if (Date.now() >= deadline) {
         throw new Error(`Timed out waiting for workspace ${workspace} idle tab ${tabId}`);
       }
@@ -673,7 +707,7 @@ export class WorkspaceManager {
     return await this.ensureWorkspace(normalizedName, wanted);
   }
 
-  async acquireIdentity(name) {
+  async acquireIdentity(name, excludedTabIds = []) {
     const normalizedName = normalizeWorkspaceName(name);
     return await this.workspaceLock(normalizedName).run(async () => {
     // Leasing may allocate a Tab inside an existing Workspace, but must never
@@ -687,11 +721,15 @@ export class WorkspaceManager {
     await this.recoverOrphanedLeases(normalizedName);
     const tabs = await this.groupTabs(ready.groupId);
     const { idle, leased } = this.classify(normalizedName, tabs);
-    if (!idle.length && leased.length >= ready.poolSize) {
+    const occupied = await this.occupiedSessionTabIds(excludedTabIds);
+    const free = idle.filter(tab => !occupied.has(tab.id));
+    // A Session-owned tab that temporarily displays role=idle still occupies
+    // pool capacity and must never be recycled into a second Session.
+    if (!free.length && leased.length + (idle.length - free.length) >= ready.poolSize) {
       throw new Error(`Workspace ${normalizedName} pool is exhausted at size ${ready.poolSize}`);
     }
 
-    let tab = idle[0];
+    let tab = free[0];
     if (!tab) {
       tab = await this.chrome.tabs.create({
         url: this.idleUrl(normalizedName),
@@ -707,9 +745,13 @@ export class WorkspaceManager {
     const identityTitle = this.identityTitle(tab.id);
     const identityUrl = this.identityUrl(normalizedName, tab.id);
     let updated;
-    try { updated = await this.chrome.tabs.update(tab.id, { url: identityUrl, active: false }); }
-    finally { this.inFlightTabIds.delete(tab.id); }
-    await this.chrome.tabGroups.update(ready.groupId, { title: normalizedName, collapsed: true });
+    try {
+      await this.chrome.tabs.update(tab.id, { url: identityUrl, active: false });
+      // Do not release the allocation fence while Chrome still exposes the
+      // old idle URL. An overlapping allocation must not see this tab as free.
+      updated = await this.waitForIdentityTab(tab.id, normalizedName);
+      await this.chrome.tabGroups.update(ready.groupId, { title: normalizedName, collapsed: true });
+    } finally { this.inFlightTabIds.delete(tab.id); }
     return {
       workspace: normalizedName,
       groupId: ready.groupId,
@@ -722,7 +764,7 @@ export class WorkspaceManager {
     });
   }
 
-  async acquire(name, url) {
+  async acquire(name, url, excludedTabIds = []) {
     const normalizedName = normalizeWorkspaceName(name);
     const parsed = new URL(String(url || ""));
     if (!["http:", "https:", "chrome-extension:"].includes(parsed.protocol)) {
@@ -741,11 +783,15 @@ export class WorkspaceManager {
     await this.recoverOrphanedLeases(normalizedName);
     const tabs = await this.groupTabs(ready.groupId);
     const { idle, leased } = this.classify(normalizedName, tabs);
-    if (!idle.length && leased.length >= ready.poolSize) {
+    const occupied = await this.occupiedSessionTabIds(excludedTabIds);
+    const free = idle.filter(tab => !occupied.has(tab.id));
+    // A Session-owned tab that temporarily displays role=idle still occupies
+    // pool capacity and must never be recycled into a second Session.
+    if (!free.length && leased.length + (idle.length - free.length) >= ready.poolSize) {
       throw new Error(`Workspace ${normalizedName} pool is exhausted at size ${ready.poolSize}`);
     }
 
-    let tab = idle[0];
+    let tab = free[0];
     if (!tab) {
       tab = await this.chrome.tabs.create({
         url: this.idleUrl(normalizedName),
@@ -758,20 +804,24 @@ export class WorkspaceManager {
       tab = await this.waitForIdleTab(tab.id, normalizedName);
     }
     this.markOwned(tab.id);
-    const updated = await this.chrome.tabs.update(tab.id, { url: parsed.href, active: false });
-    await this.chrome.tabGroups.update(ready.groupId, { title: normalizedName, collapsed: true });
-    return {
-      workspace: normalizedName,
-      groupId: ready.groupId,
-      tabId: updated.id,
-      url: updated.url || parsed.href,
-      active: Boolean(updated.active),
-    };
+    this.inFlightTabIds.add(tab.id);
+    try {
+      const updated = await this.chrome.tabs.update(tab.id, { url: parsed.href, active: false });
+      await this.chrome.tabGroups.update(ready.groupId, { title: normalizedName, collapsed: true });
+      return {
+        workspace: normalizedName,
+        groupId: ready.groupId,
+        tabId: updated.id,
+        url: updated.url || parsed.href,
+        active: Boolean(updated.active),
+      };
+    } finally { this.inFlightTabIds.delete(tab.id); }
     });
   }
 
   async release(name, tabId) {
     const normalizedName = normalizeWorkspaceName(name);
+    return this.workspaceLock(normalizedName).run(async () => {
     const ready = await this.ensureWorkspace(normalizedName);
     const wanted = Number(tabId);
     const tabs = await this.groupTabs(ready.groupId);
@@ -804,6 +854,7 @@ export class WorkspaceManager {
     }
     await this.chrome.tabGroups.update(ready.groupId, { title: normalizedName, collapsed: true });
     return { workspace: normalizedName, tabId: wanted, released: true };
+    });
   }
 
   async releaseAll() {
@@ -861,8 +912,8 @@ export class WorkspaceManager {
     if (method === "workspace.status") return await this.status(args.name);
     if (method === "workspace.list") return await this.list();
     if (method === "workspace.migrateDefault") return await this.migrateDefaultWorkspace(Number(args.activeLegacySessions || 0));
-    if (method === "workspace.acquire") return await this.acquire(args.name, args.url);
-    if (method === "workspace.acquireIdentity") return await this.acquireIdentity(args.name);
+    if (method === "workspace.acquire") return await this.acquire(args.name, args.url, args.excludedTabIds || []);
+    if (method === "workspace.acquireIdentity") return await this.acquireIdentity(args.name, args.excludedTabIds || []);
     if (method === "workspace.release") return await this.release(args.name, args.tabId);
     if (method === "workspace.releaseAll") return await this.releaseAll();
     if (method === "workspace.resize") return await this.resize(args.name, args.poolSize);

@@ -26,6 +26,13 @@ const SOCKET = process.env.WEBHELM_SOCKET || path.join(RUNTIME, 'session-node.so
 const LOCK = process.env.WEBHELM_LOCK || path.join(RUNTIME, 'session-node.lock');
 const sessions = new Map();
 const targets = new Map();
+// Pending Session creation is not yet in `sessions`, but its tab must already
+// be reserved before the workspace lease mutex is released.
+const pendingLeaseTabIds = new Set();
+function ownedLeaseTabIds() {
+  return [...new Set([...pendingLeaseTabIds,
+    ...[...sessions.values()].flatMap(session => [...session.leasedTabs.values()])])];
+}
 const pending = new Map();
 let socket, nextId = 1, browserWs, connected = false, reconnecting = false, shuttingDown = false;
 let chatgptQueue, managedChrome;
@@ -56,7 +63,9 @@ function leaseMutex(workspace) {
 async function acquireIdentityLease(session) {
   return leaseMutex(session.workspace).run(async()=>{
     await reconcileWorkspaceSessions(session.workspace);
-    const lease=await extensionCall(session,'workspace.acquireIdentity',{name:session.workspace});
+    const lease=await extensionCall(session,'workspace.acquireIdentity',{
+      name:session.workspace,excludedTabIds:ownedLeaseTabIds(),
+    });
     const targetId=await targetForUrl(lease.identityUrl);
     if(!targetId){
       await extensionCall(session,'workspace.release',{name:session.workspace,tabId:lease.tabId}).catch(()=>{});
@@ -67,6 +76,7 @@ async function acquireIdentityLease(session) {
       throw Error('Workspace extension returned a target already owned by another Session');
     }
     lease.idleUrl ||= idleUrlFromIdentity(lease.identityUrl);
+    pendingLeaseTabIds.add(lease.tabId);
     return {lease,targetId};
   });
 }
@@ -188,9 +198,14 @@ function makeHelpers(s){
     let targetId,lease;
     if(s.workspaceSupported){
       ({lease,targetId}=await acquireIdentityLease(s));
-      if(s.poisoned || s.closing){await extensionCall(s,'workspace.release',{name:s.workspace,tabId:lease.tabId});throw Error('Session execution expired');}
+      if(s.poisoned || s.closing){
+        try{await extensionCall(s,'workspace.release',{name:s.workspace,tabId:lease.tabId});}
+        finally{pendingLeaseTabIds.delete(lease.tabId);}
+        throw Error('Session execution expired');
+      }
       s.leasedTabs.set(targetId,lease.tabId);
       s.idleUrls.set(targetId,lease.idleUrl);
+      pendingLeaseTabIds.delete(lease.tabId);
     }else ({targetId}=await browser.send('Target.createTarget',{url:'about:blank'}));
     await attach(s,targetId);
     s.targetId=targetId;
@@ -404,12 +419,14 @@ async function createSession(req={}) {
     s.namespace={...h,helpers:h,session_id:sid};
     s.context=vm.createContext(s.namespace);
     sessions.set(sid,s);
+    if(lease)pendingLeaseTabIds.delete(lease.tabId);
     return {session_id:sid,workspace:s.workspace,target_id:targetId,
       url:req.url||'about:blank',workspace_supported:!!lease};
   }catch(error){
     if(lease){
       try{await extensionCall(s,'workspace.release',{name:s.workspace,tabId:lease.tabId});}
       catch{if(targetId)await browser.send('Target.closeTarget',{targetId}).catch(()=>{});}
+      finally{pendingLeaseTabIds.delete(lease.tabId);}
     }else if(targetId)await browser.send('Target.closeTarget',{targetId}).catch(()=>{});
     throw error;
   }
@@ -509,15 +526,12 @@ async function closeSessionOwned(s){
 }
 
 async function reconcileWorkspaceSessions(workspace){
-  const browser=await connectBrowser();
   for(const s of [...sessions.values()]){
     if(s.workspace!==workspace||s.closing||s.inFlight>0||s.pendingEffects>0)continue;
-    let alreadyIdle=false;
-    for(const [tid,idleUrl] of s.idleUrls){
-      try {if(sameIdleUrl(await targetUrl(browser,tid),idleUrl)){alreadyIdle=true;break;}}
-      catch {alreadyIdle=true;break;} // Lost target means this Session is no longer valid.
-    }
-    if(!alreadyIdle&&!staleSession(s))continue;
+    // A fresh Session may still be on the WebHelm idle page during a Chrome
+    // navigation; the URL is NOT proof its target has been released. Never
+    // collect a fresh Session (even when its CDP target looks idle/missing).
+    if(!staleSession(s))continue;
     try {await closeSessionOwned(s);}
     catch(error){console.error(JSON.stringify({component:'session-gc',session_id:s.session_id,error:String(error)}));}
   }
