@@ -10,16 +10,27 @@ export function siteOrigin(rawUrl) {
   return parsed.origin;
 }
 
+// Keep one registration per origin, but retain the exact page path for opening
+// and for display. Never persist query parameters or fragments.
+export function sitePage(rawUrl) {
+  const parsed = new URL(rawUrl);
+  const origin = siteOrigin(rawUrl);
+  return parsed.pathname === '/' ? origin : origin + parsed.pathname;
+}
+
 export async function listKeptSites(chromeApi) {
   const record = (await chromeApi.storage.local.get(SITE_STORAGE_KEY))[SITE_STORAGE_KEY];
-  return Array.isArray(record) ? record.filter(site => site && typeof site.id === 'string' &&
-    typeof site.url === 'string' && site.id === site.url && site.enabled === true) : [];
+  return Array.isArray(record) ? record.filter(site => {
+    if (!site || typeof site.id !== 'string' || typeof site.url !== 'string' || site.enabled !== true) return false;
+    try { return site.id === siteOrigin(site.url) && site.url === sitePage(site.url); }
+    catch { return false; }
+  }) : [];
 }
 
 export async function setKeptSite(chromeApi, url, enabled) {
   const id = siteOrigin(url);
   const sites = (await listKeptSites(chromeApi)).filter(site => site.id !== id);
-  if (enabled) sites.push({id, url:id, enabled:true, addedAt:Date.now(), revision:crypto.randomUUID()});
+  if (enabled) sites.push({id, url:sitePage(url), enabled:true, addedAt:Date.now(), revision:crypto.randomUUID()});
   sites.sort((a,b) => a.id.localeCompare(b.id));
   await chromeApi.storage.local.set({[SITE_STORAGE_KEY]: sites});
   if (!enabled) {

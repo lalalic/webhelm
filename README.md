@@ -50,7 +50,9 @@ The Actions checkout is `~/.local/webhelm`, with site modules at `~/.local/webhe
 ## Optional site Keep Alive (Extension)
 
 Only a Session in the **WebHelm** Workspace can use the Extension's **Keep Alive** toggle on an HTTPS page to
-register that website's **origin**. The website stays in the popup's Keep Alive
+register that website's **origin and current path** (without query or fragment).
+There is one site entry per origin, so enabling Keep Alive on another path
+updates its saved destination. The website stays in the popup's Keep Alive
 Sites list even after the original Session ends. Custom/other Workspace
 Sessions have no Keep Alive toggle. A green dot and website name mean that
 the Platform last confirmed login; gray means not confirmed or not logged in

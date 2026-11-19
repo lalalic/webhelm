@@ -4,8 +4,13 @@ export const SITE_STORAGE_KEY = 'webhelm.keepalive.sites.v1';
 export const SITE_STATUS_KEY = 'webhelm.keepalive.status.v1';
 
 function validSite(site) {
-  if (!site || typeof site.id !== 'string' || site.id !== site.url || site.enabled !== true) return false;
-  try { const url = new URL(site.url); return url.protocol === 'https:' && url.origin === site.id; }
+  if (!site || typeof site.id !== 'string' || typeof site.url !== 'string' || site.enabled !== true) return false;
+  try {
+    const url = new URL(site.url);
+    return url.protocol === 'https:' && !url.username && !url.password &&
+      !url.search && !url.hash && url.origin === site.id &&
+      site.url === (url.pathname === '/' ? url.origin : url.origin + url.pathname);
+  }
   catch { return false; }
 }
 
@@ -32,12 +37,14 @@ export async function readKeptSites(chromeApi, reported) {
 }
 
 export async function setStoredSite(chromeApi, url, enabled) {
-  const origin = new URL(url).origin;
-  if (!/^https:\/\//.test(origin)) throw Error('Keep Alive requires HTTPS');
+  const parsed = new URL(url);
+  const origin = parsed.origin;
+  if (parsed.protocol !== 'https:' || parsed.username || parsed.password) throw Error('Keep Alive requires HTTPS');
   const stored=await chromeApi.storage.local.get(SITE_STORAGE_KEY);
   const current=Array.isArray(stored[SITE_STORAGE_KEY]) ? stored[SITE_STORAGE_KEY] : [];
   const next=current.filter(site=>site?.id!==origin);
-  if (enabled) next.push({id:origin,url:origin,enabled:true,addedAt:Date.now(),revision:crypto.randomUUID()});
+  if (enabled) next.push({id:origin,url:parsed.pathname === '/' ? origin : origin + parsed.pathname,
+    enabled:true,addedAt:Date.now(),revision:crypto.randomUUID()});
   await chromeApi.storage.local.set({[SITE_STORAGE_KEY]: next.sort((a,b)=>a.id.localeCompare(b.id))});
   if (!enabled) {
     const storedStates=await chromeApi.storage.session.get(SITE_STATUS_KEY);

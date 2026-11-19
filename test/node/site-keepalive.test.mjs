@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {resolveSiteHeartbeat,createSiteKeepaliveScheduler} from '../../runtime/site-keepalive.mjs';
-import {siteOrigin,listKeptSites,setKeptSite,reportKeptSite,sitesWithStatus} from '../../runtime/extension/site-registry.mjs';
+import {siteOrigin,sitePage,listKeptSites,setKeptSite,reportKeptSite,sitesWithStatus} from '../../runtime/extension/site-registry.mjs';
 import {ControlChannel} from '../../runtime/extension/control-channel.mjs';
 import {createControlRpc} from '../../runtime/extension/control-rpc.mjs';
 import {summarizeWorkspaces} from '../../runtime/extension/workspace-summary.mjs';
@@ -22,13 +22,15 @@ const manifests={xhs:{url_patterns:['https://creator.xiaohongshu.com/*'],actions
   keep_alive:{action:'heartbeat',interval_minutes:30,url:'https://creator.xiaohongshu.com/'}}};
 const resolve = entry=>resolveSiteHeartbeat(entry,()=>['xhs'],p=>manifests[p],()=>'/mock/action');
 
-test('kept website registers origin only, never query tokens or lease state',async()=>{
+test('kept website stores its page path but not query tokens or lease state',async()=>{
   const {chrome,local}=mockChrome();
   assert.equal(siteOrigin('https://creator.xiaohongshu.com/a?token=secret'),site.id);
+  assert.equal(sitePage('https://www.tiktok.com/tiktokstudio/upload?token=secret#draft'),
+    'https://www.tiktok.com/tiktokstudio/upload');
   assert.throws(()=>siteOrigin('javascript:alert(1)'),/HTTPS/);
   assert.throws(()=>siteOrigin('https://username:password@example.com/'),/HTTPS/);
   await setKeptSite(chrome,'https://creator.xiaohongshu.com/publish?private=secret',true);
-  assert.deepEqual((await listKeptSites(chrome)).map(s=>s.url),[site.url]);
+  assert.deepEqual((await listKeptSites(chrome)).map(s=>s.url),[site.id+'/publish']);
   assert.equal(JSON.stringify(local).includes('secret'),false);
   const saved=(await listKeptSites(chrome))[0];
   await reportKeptSite(chrome,{id:site.id,revision:saved.revision,status:'login_required',platform:'xhs'});
@@ -43,6 +45,8 @@ test('platform must explicitly opt in; heartbeat declaration is per site and rea
   assert.deepEqual(resolve(site),{platform:'xhs',action:'heartbeat',url:'https://creator.xiaohongshu.com/',intervalMs:1800000});
   assert.equal(resolve({...site,url:'https://wrong.example',id:'https://wrong.example'}),null);
   assert.equal(resolve({...site,url:'https://creator.xiaohongshu.com/?token=secret'}),null);
+  assert.deepEqual(resolve({...site,url:'https://creator.xiaohongshu.com/new/upload'}),
+    {platform:'xhs',action:'heartbeat',url:'https://creator.xiaohongshu.com/',intervalMs:1800000});
   const prior=manifests.xhs.keep_alive;
   delete manifests.xhs.keep_alive;
   try {assert.equal(resolve(site),null);}finally{manifests.xhs.keep_alive=prior;}
@@ -74,7 +78,7 @@ test('scheduler does not guess login success if platform returns no recognized s
   assert.equal(reports[0].status,'unknown');
 });
 
-test('extension popup can toggle only a live leased tab; inactive entry opens only registered HTTPS origin',async()=>{
+test('extension popup can toggle only a live leased tab; site opens saved path without query',async()=>{
   const {chrome,calls}=mockChrome();
   let time=5000;
   const channel=new ControlChannel(chrome,()=>time,()=>`request-${time}`);
@@ -84,14 +88,15 @@ test('extension popup can toggle only a live leased tab; inactive entry opens on
     summarizeWorkspaces,scheduleBadge(){}});
   const enabled=await rpc('workspace.control.site.toggle',{sessionId:'abc',enabled:true});
   assert.equal(enabled.id,site.id);
+  assert.equal(enabled.sites[0].url,site.id+'/publish');
   const state=await rpc('workspace.control.status');
   assert.equal(state.keptSites[0].id,site.id);
   assert.equal(state.workspaces[0].sessions[0].tab_url,'https://creator.xiaohongshu.com/publish?private=secret');
   assert.deepEqual(await rpc('workspace.control.site.open',{siteId:site.id}),{ok:true,tabId:41,opened:true});
-  assert.deepEqual(calls,[['create',{url:site.url,active:true}]]);
+  assert.deepEqual(calls,[['create',{url:site.id+'/publish',active:true}]]);
   // An already-open website may belong to an agent's leased Tab. Manual
   // login must open a separate Tab instead of hijacking that Session.
-  chrome.tabs.query=async()=>[{id:11,windowId:1,url:site.url}];
+  chrome.tabs.query=async()=>[{id:11,windowId:1,url:site.id+'/publish'}];
   await rpc('workspace.control.site.open',{siteId:site.id});
   assert.equal(calls.filter(([kind])=>kind==='create').length,2);
   await assert.rejects(rpc('workspace.control.site.toggle',{sessionId:'missing',enabled:true}),/no longer leased/);

@@ -324,9 +324,9 @@ try {
     const state=await rpc(workerSid,'workspace.control.status');
     return state.keptSites.find(site=>site.id===registeredOrigin);
   },'site registered');
-  assert.equal(siteAdded.url,registeredOrigin);
+  assert.equal(siteAdded.url,registeredOrigin+'/account');
   assert.equal(JSON.stringify(siteAdded).includes('not-saved'),false);
-  assert.equal(await waitFor(async()=>evaluate(popupSid,"document.querySelector('.keepalive-row .tab-title')?.textContent==='example.invalid'"),'site shown in Extension popup'),true);
+  assert.equal(await waitFor(async()=>evaluate(popupSid,"document.querySelector('.keepalive-row .tab-title')?.textContent==='example.invalid/account'"),'site shown in Extension popup'),true);
   const loginRequired=await waitFor(async()=>{
     const state=await rpc(workerSid,'workspace.control.status');
     return state.keptSites.find(entry=>entry.id===registeredOrigin && entry.status==='login_required') || null;

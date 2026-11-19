@@ -15,7 +15,8 @@ export function resolveSiteHeartbeat(site, names=listPlatforms, manifestFor=plat
   let origin;
   try {
     const url = new URL(site?.url);
-    if (!site?.enabled || url.protocol !== 'https:' || url.origin !== site.id || url.href !== `${url.origin}/`) return null;
+    if (!site?.enabled || url.protocol !== 'https:' || url.origin !== site.id ||
+        url.username || url.password || url.search || url.hash) return null;
     origin = url.origin;
   } catch { return null; }
   for (const platform of names()) {

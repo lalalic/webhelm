@@ -1,4 +1,4 @@
-import {siteOrigin, setKeptSite, listKeptSites, sitesWithStatus, reportKeptSite} from "./site-registry.mjs";
+import {siteOrigin, sitePage, setKeptSite, listKeptSites, sitesWithStatus, reportKeptSite} from "./site-registry.mjs";
 function validTabId(tabId) { return Number.isSafeInteger(tabId) && tabId > 0; }
 function validateQueueUrl(url) {
   const parsed = new URL(url);
@@ -61,8 +61,7 @@ export function createControlRpc({control, manager, summarizeWorkspaces, schedul
         if (session.workspace !== 'WebHelm')
           throw Error('Keep Alive can be enabled only from a WebHelm Session');
         const tab = await chromeApi.tabs.get(session.tabId);
-        const id = siteOrigin(tab.url || '');
-        return setKeptSite(chromeApi,id,Boolean(args.enabled));
+        return setKeptSite(chromeApi,tab.url || '',Boolean(args.enabled));
       }
       case "workspace.control.site.remove": {
         const site = (await listKeptSites(chromeApi)).find(s => s.id === args.siteId);
@@ -72,14 +71,14 @@ export function createControlRpc({control, manager, summarizeWorkspaces, schedul
       case "workspace.control.site.open": {
         const site = (await listKeptSites(chromeApi)).find(s => s.id === args.siteId);
         if (!site) throw Error('Keep Alive site is no longer registered');
-        const url = siteOrigin(site.url);
+        const url = sitePage(site.url);
         const daemon = await control.status();
         const leasedIds = new Set(daemon.connected ? daemon.sessions.flatMap(session =>
           Array.isArray(session.tabIds) ? session.tabIds : [session.tabId]) : []);
         // Never hand a human-login operation an active agent-owned leased Tab.
         const existing = daemon.connected && (await chromeApi.tabs.query({})).find(tab => {
           if (leasedIds.has(tab.id)) return false;
-          try { return siteOrigin(tab.url) === url; } catch { return false; }
+          try { return sitePage(tab.url) === url; } catch { return false; }
         });
         if (existing) {
           await chromeApi.tabs.update(existing.id,{active:true});

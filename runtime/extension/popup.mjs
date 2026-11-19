@@ -50,6 +50,11 @@ function originForTab(url) {
   catch { return null; }
 }
 
+function siteLabel(url) {
+  const page = new URL(url);
+  return page.hostname + (page.pathname === '/' ? '' : page.pathname);
+}
+
 function renderKeptSites(sites, busy, connected) {
   const signature = JSON.stringify(sites) + `:${busy}:${connected}`;
   if (signature === lastSiteSignature) return;
@@ -70,14 +75,14 @@ function renderKeptSites(sites, busy, connected) {
     status.dataset.status=loggedIn?'alive':'inactive';
     status.title=statusText;
     status.setAttribute('aria-hidden','true');
-    const name=actionButton(new URL(site.url).hostname,false,async()=>{
+    const name=actionButton(siteLabel(site.url),false,async()=>{
       try {
         if (canControlSites) await rpc('workspace.control.site.open',{siteId:site.id});
         else await chrome.tabs.create({url:site.url,active:true});
       } catch(error){el('message').textContent=error.message;}
     },`tab-title keepalive-name ${loggedIn?'is-logged-in':''}`);
-    name.title=`${statusText} · Click to open site`;
-    name.setAttribute('aria-label',`${new URL(site.url).hostname}: ${statusText}. Open site`);
+    name.title=`${siteLabel(site.url)} · ${statusText} · Click to open site`;
+    name.setAttribute('aria-label',`${siteLabel(site.url)}: ${statusText}. Open site`);
     const remove=actionButton('×',false,async()=>{
       try {
         if (canControlSites) await rpc('workspace.control.site.remove',{siteId:site.id});
@@ -85,7 +90,7 @@ function renderKeptSites(sites, busy, connected) {
         lastSiteSignature='';lastSignature='';refresh();
       } catch(error){el('message').textContent=error.message;}
     },'keepalive-remove');
-    remove.title=`Remove ${new URL(site.url).hostname} from Keep Alive`;
+    remove.title=`Remove ${siteLabel(site.url)} from Keep Alive`;
     remove.setAttribute('aria-label',remove.title);
     row.append(status,name,remove);
     target.append(row);
