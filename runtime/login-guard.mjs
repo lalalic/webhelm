@@ -140,3 +140,22 @@ export function activateRuntime(stagedPath,{home=os.homedir()}={}) {
   try{fs.renameSync(temp,current);}finally{if(fs.existsSync(temp))fs.unlinkSync(temp);}
   return {path:current,updated:true};
 }
+
+// Pre-updater installations may have pointed ~/.local/bin/webhelm directly
+// at an immutable runtime-VERSION snapshot. Migrate ONLY this owned pattern;
+// preserve Skill launchers, unmanaged binaries and other symlinks.
+export function migrateLegacyRuntimeCli({home=os.homedir()}={}) {
+  const link=path.join(home,'.local/bin/webhelm');
+  const stable=path.join(currentRuntimePath(home),'bin/webhelm.mjs');
+  if(!fs.existsSync(stable))return {status:'skipped',reason:'stable_runtime_missing'};
+  try{if(!fs.lstatSync(link).isSymbolicLink())return {status:'preserved',reason:'unmanaged_cli'};}
+  catch(error){if(error.code==='ENOENT')return {status:'skipped',reason:'no_existing_cli'};throw error;}
+  const resolved=path.resolve(path.dirname(link),fs.readlinkSync(link));
+  const relative=path.relative(path.join(home,'.local/share/webhelm'),resolved).split(path.sep).join('/');
+  if(!/^runtime-\d+\.\d+\.\d+\/bin\/webhelm\.mjs$/.test(relative))
+    return {status:'preserved',reason:'not_a_versioned_runtime_link'};
+  const tmp=`${link}.${process.pid}.${Date.now()}.tmp`;
+  fs.symlinkSync(stable,tmp);
+  try{fs.renameSync(tmp,link);}finally{if(fs.existsSync(tmp))fs.unlinkSync(tmp);}
+  return {status:'migrated',path:link,target:stable};
+}

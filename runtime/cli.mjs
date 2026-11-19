@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { ensureDaemon, request, SOCKET } from './node-daemon.mjs';
 import { PLATFORMS, listPlatforms, platformProfile, actionPath, validateConfig } from './platforms.mjs';
 import { ACTIONS_DIR, ensureActions, syncActions, publishActions } from './actions-repo.mjs';
-import { activateRuntime, currentRuntimePath, installLoginGuard, installRuntimeUpdate, stageRuntimeForLoginGuard } from './login-guard.mjs';
+import { activateRuntime, currentRuntimePath, installLoginGuard, installRuntimeUpdate, migrateLegacyRuntimeCli, stageRuntimeForLoginGuard } from './login-guard.mjs';
 import { upgradeRuntime } from './auto-update.mjs';
 import { cliHelp } from './cli-help.mjs';
 
@@ -113,9 +113,10 @@ async function main(args = process.argv.slice(2)) {
     const cliPath=sourceMode
       ? fileURLToPath(new URL('../bin/webhelm.mjs',import.meta.url))
       : path.join(currentRuntimePath(),'bin/webhelm.mjs');
+    const global_cli=sourceMode?{status:'source_checkout'}:migrateLegacyRuntimeCli();
     const login_guard=installLoginGuard({cliPath,nodePath:process.execPath,sourceMode});
     const auto_update=installRuntimeUpdate({cliPath,nodePath:process.execPath,sourceMode});
-    return emit({status:'ready',...repo,daemon_pid:chrome.pid,managed_chrome:chrome.managed_chrome,login_guard,auto_update});
+    return emit({status:'ready',...repo,daemon_pid:chrome.pid,managed_chrome:chrome.managed_chrome,global_cli,login_guard,auto_update});
   }
   if (group === 'upgrade') return emit(await upgradeRuntime());
   if (group === 'ensure') {

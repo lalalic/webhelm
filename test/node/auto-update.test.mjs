@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {compareVersions,upgradeRuntime} from '../../runtime/auto-update.mjs';
-import {activateRuntime,currentRuntimePath,stageRuntimeForLoginGuard,installRuntimeUpdate} from '../../runtime/login-guard.mjs';
+import {activateRuntime,currentRuntimePath,migrateLegacyRuntimeCli,stageRuntimeForLoginGuard,installRuntimeUpdate} from '../../runtime/login-guard.mjs';
 
 const source=fileURLToPath(new URL('../../',import.meta.url));
 const local=JSON.parse(fs.readFileSync(path.join(source,'package.json'),'utf8')).version;
@@ -127,5 +127,29 @@ test('post-commit verification failure never points clients at mismatched old ru
     await assert.rejects(upgradeRuntime(options),/Cutover verification failed/);
     assert.ok(calls.includes('upgrade-commit'));
     assert.equal(JSON.parse(fs.readFileSync(path.join(currentRuntimePath(home),'package.json'))).version,newer);
+  }finally{fs.rmSync(home,{recursive:true,force:true});}
+});
+
+test('legacy global CLI migrates pinned runtime link, preserving all foreign links',()=>{
+  const home=tempHome();
+  try {
+    const old=stageRuntimeForLoginGuard({home,source});
+    activateRuntime(old.path,{home});
+    const globalBin=path.join(home,'.local/bin');
+    fs.mkdirSync(globalBin,{recursive:true});
+    const cli=path.join(globalBin,'webhelm');
+    fs.symlinkSync(path.join(old.path,'bin/webhelm.mjs'),cli);
+    const result=migrateLegacyRuntimeCli({home});
+    assert.equal(result.status,'migrated');
+    assert.equal(fs.readlinkSync(cli),path.join(currentRuntimePath(home),'bin/webhelm.mjs'));
+    assert.equal(migrateLegacyRuntimeCli({home}).status,'preserved');
+    fs.unlinkSync(cli);
+    fs.symlinkSync(path.join(home,'.agents/skills/webhelm/bin/webhelm'),cli);
+    assert.equal(migrateLegacyRuntimeCli({home}).status,'preserved');
+    assert.equal(fs.readlinkSync(cli),path.join(home,'.agents/skills/webhelm/bin/webhelm'));
+    fs.unlinkSync(cli);
+    fs.writeFileSync(cli,'#!/bin/sh\n');
+    assert.equal(migrateLegacyRuntimeCli({home}).reason,'unmanaged_cli');
+    assert.equal(fs.readFileSync(cli,'utf8'),'#!/bin/sh\n');
   }finally{fs.rmSync(home,{recursive:true,force:true});}
 });

@@ -4,7 +4,7 @@ import path from 'node:path';
 import {execFileSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {request} from './node-daemon.mjs';
-import {activateRuntime,currentRuntimePath,installLoginGuard,installRuntimeUpdate,stageRuntimeForLoginGuard} from './login-guard.mjs';
+import {activateRuntime,currentRuntimePath,installLoginGuard,installRuntimeUpdate,migrateLegacyRuntimeCli,stageRuntimeForLoginGuard} from './login-guard.mjs';
 
 const REGISTRY='https://registry.npmjs.org';
 const SOURCE=fileURLToPath(new URL('../',import.meta.url));
@@ -100,7 +100,7 @@ export async function upgradeRuntime({home=os.homedir(),source=SOURCE,nodePath=p
     const upToDate=daemon?.version===target && currentTarget &&
       fs.existsSync(path.join(currentTarget,'package.json')) &&
       JSON.parse(fs.readFileSync(path.join(currentTarget,'package.json'),'utf8')).version===target;
-    if(upToDate)return {status:'current',upgraded:false,version:target};
+    if(upToDate)return {status:'current',upgraded:false,version:target,global_cli:migrateLegacyRuntimeCli({home})};
     // Stage before requesting the daemon to drain; download may take time.
     const staged=compareVersions(target,local)>0
       ? await download(target,{home}) : stageRuntimeForLoginGuard({home,source});
@@ -113,6 +113,7 @@ export async function upgradeRuntime({home=os.homedir(),source=SOURCE,nodePath=p
     }
     prior=currentTarget;
     activate(staged.path,{home});switched=true;
+    const global_cli=migrateLegacyRuntimeCli({home});
     const cliPath=path.join(current,'bin/webhelm.mjs');
     const guard=installGuard({home,cliPath,nodePath,apply});
     const poller=installPoller({home,cliPath,nodePath,apply});
@@ -136,7 +137,7 @@ export async function upgradeRuntime({home=os.homedir(),source=SOURCE,nodePath=p
     const state=await run();
     if(state.version!==target)throw Error(`Cutover verification failed: ${state.version} !== ${target}`);
     return {status:'upgraded',upgraded:true,from:daemon?.version||null,to:target,
-      daemon_pid:state.daemon?.pid||null,guard:guard.status,auto_update:poller.status};
+      daemon_pid:state.daemon?.pid||null,global_cli,guard:guard.status,auto_update:poller.status};
   }catch(error){
     // Never point new clients at an old Runtime after a committed daemon
     // cutover: the new daemon may already be serving requests.

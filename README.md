@@ -64,7 +64,9 @@ Neo Master uses `WEBHELM_SOURCE_MODE=1` and runs its linked Git checkout, not
 a published npm package. Automatic npm updates are deliberately disabled
 there; updating a development checkout is a separate, reviewed Git operation.
 Existing npm installations need to run `webhelm setup` once after receiving
-this release to register the updater LaunchAgent.
+this release to register the updater LaunchAgent. The setup and updater also
+migrate only legacy global CLI symlinks that target an owned immutable
+`runtime-VERSION/bin/webhelm.mjs` into the stable Runtime link.
 
 ## WebHelm Chrome Extension control panel
 
