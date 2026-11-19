@@ -76,6 +76,13 @@ this release to register the updater LaunchAgent. The setup and updater also
 migrate only legacy global CLI symlinks that target an owned immutable
 `runtime-VERSION/bin/webhelm.mjs` into the stable Runtime link.
 
+ChatGPT long-turn transport preserves a leading `<top-instructions>` block
+and its `Neo model request: resp_...` ID in the visible composer when the
+complete message must be attached as `prompt.md` (>2,000 characters). This
+avoids hiding the model reporting contract in an unread attachment. The
+original full message is still attached exactly, and ordinary long prompts
+retain the existing short `Read prompt.md` composer text.
+
 ## WebHelm Chrome Extension control panel
 
 The daemon-managed Chrome Extension is installed from the npm Runtime and does not require the Chrome Web Store. Click the WebHelm toolbar icon to see daemon connectivity, each configured workspace's available capacity and current Session count. The toolbar badge shows the number of **active daemon Sessions** across all workspaces (including `0` when idle). `!` means the daemon heartbeat is stale and `?` means the Session count is unknown. The popup separately shows pool availability and idle tabs.

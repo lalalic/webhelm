@@ -638,3 +638,36 @@ test("following messages wait while ChatGPT is still generating",async(t)=>{
   assert.equal(row.state,"WAITING");
   assert.equal(row.next_check_at,110);
 });
+
+
+test("long queued Turn keeps top-instructions in visible composer while full original is in prompt.md",async t=>{
+  const {readFileSync}=await import("node:fs");
+  const {q,root}=fixture();
+  t.after(async()=>{await q.shutdown();rmSync(root,{recursive:true,force:true})});
+  const id='resp_'+'3'.repeat(40);
+  const instructions='<top-instructions>\nCall chat_report(text), heartbeat, and completed:true separately.\n</top-instructions>';
+  const original=instructions+'\n\nNeo model request: '+id+'\n\n[USER]\n'+'x'.repeat(4200)+'\n[/USER]';
+  const {deliveryMessage}=await import('../../runtime/chatgpt/chatgpt-probe.mjs');
+  const expected=deliveryMessage(original);
+  assert.match(expected,/^<top-instructions>/);
+  assert.match(expected,/Neo model request: resp_[a-f0-9]{40}/);
+  assert.ok(expected.length<=2000);
+  const queueId=q.enqueue({thread_id:'thread-top-contract',message:original,idempotency_key:'top-contract'}).queue_id;
+  q.sessions.set(queueId,'top-contract-session');
+  let calls=0;
+  q._exec=async(_sid,source)=>{
+    calls++;
+    if(calls===1){
+      const files=JSON.parse(source.match(/const files=(\[[^\n]+\]);/)[1]);
+      assert.equal(readFileSync(files.at(-1),'utf8'),original);
+      return {ready:true};
+    }
+    assert.ok(source.includes(JSON.stringify(expected.replace(/\s+/g,' ').trim())),'submits bounded inline contract + reference');
+    assert.ok(!source.includes('x'.repeat(300)),'does not echo the full user task');
+    return {verified_by:'user-turn'};
+  };
+  const result=await q._send(q.rows()[0]);
+  assert.equal(result.verified_by,'user-turn');
+  assert.equal(calls,2);
+  assert.equal(q.rows()[0].message,original);
+});
