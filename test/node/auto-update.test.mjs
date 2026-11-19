@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {compareVersions,upgradeRuntime} from '../../runtime/auto-update.mjs';
+import {compareVersions,upgradeRuntime,forceStopDaemon} from '../../runtime/auto-update.mjs';
 import {activateRuntime,currentRuntimePath,migrateLegacyRuntimeCli,stageRuntimeForLoginGuard,installRuntimeUpdate} from '../../runtime/login-guard.mjs';
 
 const source=fileURLToPath(new URL('../../',import.meta.url));
@@ -151,5 +151,90 @@ test('legacy global CLI migrates pinned runtime link, preserving all foreign lin
     fs.writeFileSync(cli,'#!/bin/sh\n');
     assert.equal(migrateLegacyRuntimeCli({home}).reason,'unmanaged_cli');
     assert.equal(fs.readFileSync(cli,'utf8'),'#!/bin/sh\n');
+  }finally{fs.rmSync(home,{recursive:true,force:true});}
+});
+
+test('explicit force upgrades an unsupported legacy daemon despite active Sessions',async()=>{
+  const home=tempHome();
+  try{
+    const calls=[];
+    const {options}=deps(home);
+    options.ipc=async({op})=>{
+      calls.push(op);
+      if(op==='ping')return {ok:true,pid:12345,version:local,session_count:3};
+      throw Error('unknown op: '+op);
+    };
+    options.restart=async(daemon,{ipc})=>{
+      assert.equal(daemon.session_count,3);
+      assert.equal((await ipc({op:'ping'})).pid,12345);
+      calls.push('SIGTERM');
+      return {stopping:true,stopped:true,pid:daemon.pid};
+    };
+    const result=await upgradeRuntime({...options,force:true});
+    assert.equal(result.status,'upgraded');
+    assert.equal(result.forced,true);
+    assert.equal(result.sessions_before_restart,3);
+    assert.equal(result.to,newer);
+    assert.ok(calls.includes('SIGTERM'));
+    assert.ok(!calls.includes('upgrade-prepare'));
+    assert.ok(!calls.includes('upgrade-commit'));
+    assert.equal(JSON.parse(fs.readFileSync(path.join(currentRuntimePath(home),'package.json'))).version,newer);
+  }finally{fs.rmSync(home,{recursive:true,force:true});}
+});
+
+test('force restarts an already current daemon; normal upgrade does not',async()=>{
+  const home=tempHome();
+  try{
+    const staged=stagedUpgrade(home);
+    activateRuntime(staged.path,{home});
+    const {options}=deps(home);
+    options.ipc=async({op})=>{
+      assert.equal(op,'ping');
+      return {ok:true,pid:44,version:newer,session_count:0};
+    };
+    let restarts=0;
+    options.restart=async()=>{restarts++;return {stopping:true,stopped:true};};
+    assert.equal((await upgradeRuntime(options)).status,'current');
+    assert.equal(restarts,0);
+    const forced=await upgradeRuntime({...options,force:true});
+    assert.equal(forced.status,'upgraded');
+    assert.equal(forced.forced,true);
+    assert.equal(restarts,1);
+  }finally{fs.rmSync(home,{recursive:true,force:true});}
+});
+
+test('forced SIGTERM timeout does not roll the Runtime pointer back',async()=>{
+  const home=tempHome();
+  try{
+    const old=stageRuntimeForLoginGuard({home,source});
+    activateRuntime(old.path,{home});
+    const {options}=deps(home);
+    options.restart=async()=>({stopping:true,stopped:false});
+    const result=await upgradeRuntime({...options,force:true});
+    assert.equal(result.reason,'daemon_shutdown_timeout');
+    assert.equal(result.forced,true);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(currentRuntimePath(home),'package.json'))).version,newer);
+  }finally{fs.rmSync(home,{recursive:true,force:true});}
+});
+
+test('forceStopDaemon refuses wrong lock, wrong process identity, and missing IPC',async()=>{
+  const home=tempHome();
+  try{
+    const lockPath=path.join(home,'daemon.lock');
+    fs.writeFileSync(lockPath,'123');
+    const daemon={pid:124,version:local};
+    const signals=[];
+    const params={home,lockPath,inspect:()=>'/usr/bin/node /tmp/node-daemon.mjs daemon',
+      ipc:async()=>({pid:124,version:local}),signal:(...args)=>signals.push(args)};
+    await assert.rejects(forceStopDaemon(daemon,params),/lock PID mismatch/);
+    fs.writeFileSync(lockPath,'124');
+    await assert.rejects(forceStopDaemon(daemon,{...params,inspect:()=>'/usr/bin/Chrome'}),/not a WebHelm daemon/);
+    await assert.rejects(forceStopDaemon(daemon,{...params,ipc:async()=>({pid:125,version:local})}),/identity changed/);
+    assert.deepEqual(signals,[]);
+    const result=await forceStopDaemon(daemon,{...params,signal:(pid,signal)=>{
+      signals.push([pid,signal]);fs.unlinkSync(lockPath);
+    }});
+    assert.deepEqual(result,{stopping:true,stopped:true,pid:124});
+    assert.deepEqual(signals,[[124,'SIGTERM']]);
   }finally{fs.rmSync(home,{recursive:true,force:true});}
 });

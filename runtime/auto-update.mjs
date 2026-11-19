@@ -77,12 +77,39 @@ function acquireLock(home) {
   return null;
 }
 
+// Explicit --force only. Verify the PID against the local daemon lock and
+// live IPC identity before sending SIGTERM. Never signal managed Chrome.
+export async function forceStopDaemon(daemon,{home=os.homedir(),ipc=req=>request(req,false),
+    lockPath=process.env.WEBHELM_LOCK||path.join(home,'.config/webhelm/runtime/session-node.lock'),
+    signal=process.kill,inspect=pid=>execFileSync('ps',['-p',String(pid),'-o','command='],
+      {encoding:'utf8',timeout:5000}),timeoutMs=30000}={}) {
+  const pid=daemon?.pid;
+  if(!Number.isSafeInteger(pid)||pid<=1||pid===process.pid)
+    throw Error('Refusing forced upgrade: invalid daemon PID');
+  const owner=Number(fs.readFileSync(lockPath,'utf8').trim());
+  if(owner!==pid)throw Error('Refusing forced upgrade: daemon lock PID mismatch');
+  const command=await inspect(pid);
+  if(!/node-daemon\.mjs\s+daemon(?:\s|$)/.test(command))
+    throw Error('Refusing forced upgrade: PID is not a WebHelm daemon');
+  const live=await ipc({op:'ping'});
+  if(live?.pid!==pid||live.version!==daemon.version)
+    throw Error('Refusing forced upgrade: daemon identity changed');
+  signal(pid,'SIGTERM');
+  const deadline=Date.now()+timeoutMs;
+  while(Date.now()<deadline){
+    // Lock removal follows shutdown cleanup, including queue worker teardown.
+    if(!fs.existsSync(lockPath))return {stopping:true,stopped:true,pid};
+    await sleep(100);
+  }
+  return {stopping:true,stopped:false,pid};
+}
+
 // Inject ports for isolated tests. Production never imports npm code or
 // touches another Chrome profile to decide whether to upgrade.
 export async function upgradeRuntime({home=os.homedir(),source=SOURCE,nodePath=process.execPath,
     latest=npmLatest,download=downloadRuntime,ipc=req=>request(req,false),
     installGuard=installLoginGuard,installPoller=installRuntimeUpdate,
-    activate=activateRuntime,verify=null,apply=true}={}) {
+    activate=activateRuntime,verify=null,restart=forceStopDaemon,apply=true,force=false}={}) {
   if(process.env.WEBHELM_SOURCE_MODE==='1')return {status:'source_checkout',upgraded:false};
   const unlock=acquireLock(home);
   if(!unlock)return {status:'already_running',upgraded:false};
@@ -100,11 +127,11 @@ export async function upgradeRuntime({home=os.homedir(),source=SOURCE,nodePath=p
     const upToDate=daemon?.version===target && currentTarget &&
       fs.existsSync(path.join(currentTarget,'package.json')) &&
       JSON.parse(fs.readFileSync(path.join(currentTarget,'package.json'),'utf8')).version===target;
-    if(upToDate)return {status:'current',upgraded:false,version:target,global_cli:migrateLegacyRuntimeCli({home})};
+    if(upToDate&&!force)return {status:'current',upgraded:false,version:target,global_cli:migrateLegacyRuntimeCli({home})};
     // Stage before requesting the daemon to drain; download may take time.
     const staged=compareVersions(target,local)>0
       ? await download(target,{home}) : stageRuntimeForLoginGuard({home,source});
-    if(daemon && compareVersions(daemon.version,target)<0){
+    if(!force && daemon && compareVersions(daemon.version,target)<0){
       let gate;
       try{gate=await ipc({op:'upgrade-prepare'});}
       catch(error){return {status:'deferred',upgraded:false,reason:'daemon_upgrade_protocol_unavailable',detail:error.message,latest:target};}
@@ -119,7 +146,14 @@ export async function upgradeRuntime({home=os.homedir(),source=SOURCE,nodePath=p
     const poller=installPoller({home,cliPath,nodePath,apply});
     if(['staged_not_loaded','skipped'].includes(guard.status)||
        ['staged_not_loaded','skipped'].includes(poller.status))throw Error('Runtime LaunchAgent activation failed');
-    if(prepared){
+    if(force && daemon){
+      const stopped=await restart(daemon,{home,ipc});
+      if(!stopped?.stopping)throw Error('Forced daemon restart was not accepted');
+      committed=true;
+      if(!stopped.stopped)return {status:'deferred',upgraded:false,
+        reason:'daemon_shutdown_timeout',daemon_pid:daemon.pid,latest:target,
+        forced:true,warning:'SIGTERM sent; runtime pointer updated but daemon has not completed shutdown'};
+    }else if(prepared){
       const result=await ipc({op:'upgrade-commit'});
       if(!result?.stopping)throw Error('Daemon did not accept Runtime cutover');
       prepared=false;committed=true;
@@ -137,7 +171,8 @@ export async function upgradeRuntime({home=os.homedir(),source=SOURCE,nodePath=p
     const state=await run();
     if(state.version!==target)throw Error(`Cutover verification failed: ${state.version} !== ${target}`);
     return {status:'upgraded',upgraded:true,from:daemon?.version||null,to:target,
-      daemon_pid:state.daemon?.pid||null,global_cli,guard:guard.status,auto_update:poller.status};
+      daemon_pid:state.daemon?.pid||null,global_cli,guard:guard.status,auto_update:poller.status,
+      ...(force?{forced:true,sessions_before_restart:daemon?.session_count??null}:{})};
   }catch(error){
     // Never point new clients at an old Runtime after a committed daemon
     // cutover: the new daemon may already be serving requests.

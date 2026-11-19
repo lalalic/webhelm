@@ -13,7 +13,7 @@ Commands:
   webhelm setup                            Set up managed Chrome and local Actions
   webhelm status                           Report browser and daemon status (JSON)
   webhelm ensure                           Check and recover managed Chrome health
-  webhelm upgrade                          Check npm and safely upgrade the Runtime
+  webhelm upgrade [--force]                Check npm and upgrade the Runtime
   webhelm capacity                         Report available browser capacity (JSON)
   webhelm session start [--url URL]        Start a persistent browser Session
   webhelm session list                    List CLI-owned Sessions
@@ -56,7 +56,7 @@ Output: JSON with status, Actions checkout path, daemon and browser details.
 
 Example:
   webhelm setup`,
-  upgrade: `webhelm upgrade — update the npm Runtime when safely idle\n\nUsage:\n  webhelm upgrade\n\nChecks npm once. Stages newer Runtime without executing install scripts.\nCutover waits until all Sessions and in-flight queue workers are idle;\notherwise reports deferred and retries on the next hourly LaunchAgent run.\nNever updates a source-mode checkout or restarts managed Chrome.\n\nOutput: JSON current, upgraded, deferred, or source_checkout.`,
+  upgrade: `webhelm upgrade — update the npm Runtime when safely idle\n\nUsage:\n  webhelm upgrade [--force]\n\nChecks npm once. Stages newer Runtime without executing install scripts.\nCutover waits until all Sessions and in-flight queue workers are idle;\notherwise reports deferred and retries on the next hourly LaunchAgent run.\nOld daemons without the upgrade protocol defer safely.\n--force bypasses idle checks and sends SIGTERM to the verified WebHelm\ndaemon (including legacy versions), which is then restarted.\nActive Sessions and in-flight queue work may be interrupted.\nThe hourly updater never uses --force.\nNever updates a source-mode checkout or deliberately restarts Chrome.\n\nOutput: JSON current, upgraded, deferred, or source_checkout.`,
   status: `webhelm status — inspect managed browser and daemon
 
 Usage:

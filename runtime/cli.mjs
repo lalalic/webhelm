@@ -118,7 +118,11 @@ async function main(args = process.argv.slice(2)) {
     const auto_update=installRuntimeUpdate({cliPath,nodePath:process.execPath,sourceMode});
     return emit({status:'ready',...repo,daemon_pid:chrome.pid,managed_chrome:chrome.managed_chrome,global_cli,login_guard,auto_update});
   }
-  if (group === 'upgrade') return emit(await upgradeRuntime());
+  if (group === 'upgrade') {
+    if(args.some(value=>value!=='upgrade'&&value!=='--force'))
+      throw Error('upgrade supports only --force');
+    return emit(await upgradeRuntime({force:has(args,'--force')}));
+  }
   if (group === 'ensure') {
     try { return emit(await request({op:'guard-check'})); }
     catch(error) {

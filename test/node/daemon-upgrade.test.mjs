@@ -6,6 +6,7 @@ import path from 'node:path';
 import net from 'node:net';
 import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
+import {forceStopDaemon} from '../../runtime/auto-update.mjs';
 
 const daemon=fileURLToPath(new URL('../../runtime/node-daemon.mjs',import.meta.url));
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -62,6 +63,39 @@ test('real isolated daemon has an atomic upgrade gate and graceful commit',async
   }finally{
     if(child.exitCode===null)child.kill('SIGTERM');
     await new Promise(resolve=>{if(child.exitCode!==null)resolve();else child.once('exit',resolve);});
+    fs.rmSync(root,{recursive:true,force:true});
+  }
+});
+
+test('explicit force sends SIGTERM only to an isolated, positively identified daemon',async()=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'webhelm-force-daemon-'));
+  const socket=path.join(root,'server.sock'),lock=path.join(root,'daemon.lock');
+  const child=spawn(process.execPath,[daemon,'daemon'],{env:{...process.env,
+    WEBHELM_RUNTIME_DIR:root,WEBHELM_SOCKET:socket,WEBHELM_LOCK:lock,
+    WEBHELM_CDP_URL:'http://127.0.0.1:1',WEBHELM_CHATGPT_QUEUE_PAUSED:'1',
+    WEBHELM_SITE_HEARTBEAT_POLL_MS:'600000'},stdio:'ignore'});
+  try{
+    let ping;
+    for(let i=0;i<100;i++){
+      try{ping=await send(socket,'ping');break;}catch{await delay(50);}
+    }
+    assert.equal(ping?.pid,child.pid);
+    assert.equal(fs.readFileSync(lock,'utf8'),String(child.pid));
+    const stopped=await forceStopDaemon(ping,{lockPath:lock,
+      ipc:({op})=>send(socket,op),timeoutMs:10000});
+    assert.deepEqual(stopped,{stopping:true,stopped:true,pid:child.pid});
+    assert.equal(fs.existsSync(lock),false);
+    await new Promise(resolve=>{
+      if(child.exitCode!==null)resolve();
+      else child.once('exit',resolve);
+    });
+    assert.equal(fs.existsSync(socket),false);
+  }finally{
+    if(child.exitCode===null)child.kill('SIGTERM');
+    await new Promise(resolve=>{
+      if(child.exitCode!==null)resolve();
+      else child.once('exit',resolve);
+    });
     fs.rmSync(root,{recursive:true,force:true});
   }
 });

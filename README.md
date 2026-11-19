@@ -58,7 +58,12 @@ new daemon against the existing Chrome/profile/queue, and verifies its version.
 A busy daemon returns `deferred` and retries on the next scheduled run. A failed
 installation reverts the pointer and resumes the old queue. Unavailable npm or
 unrecognized old daemon upgrade protocols fail closed rather than killing a
-Session. The update log is at `~/.config/webhelm/runtime/auto-update.log`.
+Session. For a one-time manual migration, `webhelm upgrade --force` verifies
+the daemon PID/lock and sends SIGTERM before starting the new Runtime.
+This bypasses idle checks and may interrupt active Sessions or running queue
+workers; it does not deliberately restart Chrome. The scheduled updater
+never uses `--force`. The update log is at
+`~/.config/webhelm/runtime/auto-update.log`.
 
 Neo Master uses `WEBHELM_SOURCE_MODE=1` and runs its linked Git checkout, not
 a published npm package. Automatic npm updates are deliberately disabled
