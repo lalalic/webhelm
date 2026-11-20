@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import {fileURLToPath} from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 const run = promisify(execFile);
@@ -10,6 +11,19 @@ const REMOTE = process.env.WEBHELM_ACTIONS_REPO || 'https://github.com/lalalic/w
 const options={timeout:90000,maxBuffer:1048576};
 let initialSetup;
 const git=(...args)=>run('git',args,options).then(r=>r.stdout.trim());
+const realChatGPTMvpScript=fileURLToPath(new URL('../scripts/chatgpt-three-mvps.mjs',import.meta.url));
+// Only site delivery changes trigger external four-message acceptance.
+// Other site publishing must never touch a ChatGPT account.
+export function needsChatGPTRealMvp(status) {
+  return String(status).split('\n').some(line=>{
+    const index=line.indexOf('platforms/chatgpt/');
+    if(index<0)return false;
+    const name=line.slice(index+'platforms/chatgpt/'.length);
+    return !name || name.startsWith('actions/') || name.startsWith('runtime/') ||
+      name.startsWith('queues/') || name==='manifest.yaml';
+  });
+}
+
 function verifyCheckout(){
   if (!fs.existsSync(path.join(ACTIONS_DIR,'.git')) || !fs.existsSync(path.join(ACTIONS_DIR,'platforms')))
     throw new Error(`Existing ${ACTIONS_DIR} is not a complete WebHelm Actions checkout; do not overwrite it`);
@@ -52,6 +66,25 @@ export async function publishActions(message){
   if(!changed)throw Error('No platform action changes to publish');
   // Run repository contract tests before creating a commit. These must not perform live writes.
   await run('npm',['test'],{cwd:ACTIONS_DIR,...options});
+  // Real-browser ChatGPT release gate: run after offline tests and before
+  // creating/pushing a commit. The test cannot be silently bypassed by mocks
+  // or by the diagnostic --isolated-manual-queue option.
+  if(needsChatGPTRealMvp(changed)) {
+    if(process.env.WEBHELM_MVP_ALLOW_SEND!=='1')
+      throw Error('ChatGPT platform changes require 3 REAL MVPs before publish: set WEBHELM_MVP_ALLOW_SEND=1 (four test sends)');
+    if(!fs.existsSync(realChatGPTMvpScript))
+      throw Error('missing required ChatGPT 3-MVP script in WebHelm Runtime; publish blocked');
+    const before=await git('-C',ACTIONS_DIR,'status','--porcelain','--','platforms/chatgpt');
+    const proof=await run(process.execPath,[realChatGPTMvpScript],{
+      cwd:ACTIONS_DIR,env:process.env,timeout:300000,maxBuffer:1048576,
+    });
+    const verified=proof.stdout.split('\n').flatMap(line=>{
+      try{return [JSON.parse(line)];}catch{return [];}
+    }).find(item=>item.stage==='ALL_3_MVPS_PASS' && item.live_daemon_queue===true);
+    if(!verified)throw Error('3-MVP execution did not prove native live Daemon Queue FIFO; publish blocked');
+    const after=await git('-C',ACTIONS_DIR,'status','--porcelain','--','platforms/chatgpt');
+    if(before!==after)throw Error('ChatGPT files changed during real 3-MVP gate; rerun required');
+  }
   await git('-C',ACTIONS_DIR,'add','--','platforms');
   await git('-C',ACTIONS_DIR,'diff','--cached','--check');
   await git('-C',ACTIONS_DIR,'commit','-m',message.trim());

@@ -12,13 +12,15 @@
   "files": [
     "bin/",
     "runtime/",
+    "scripts/chatgpt-three-mvps.mjs",
     "README.md",
     "PRIVACY.md"
   ],
   "scripts": {
     "test": "node --test test/node/*.test.mjs test/workspace-manager.test.mjs test/skill/*.test.mjs",
     "test:package": "npm pack --dry-run --json",
-    "test:e2e:extension": "node test/e2e/extension-control.e2e.mjs"
+    "test:e2e:extension": "node test/e2e/extension-control.e2e.mjs",
+    "test:e2e:chatgpt-mvps": "node scripts/chatgpt-three-mvps.mjs"
   },
   "license": "MIT",
   "repository": {

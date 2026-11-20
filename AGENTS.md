@@ -11,3 +11,16 @@
 - After changes, run tests, inspect the npm tarball for accidental bundled Actions/secrets, test real Chrome with owned temporary tabs, and only then push/release. Record verified vs unverified site behavior in the Actions repository.
 
 - For a **new** unsupported site, follow the canonical guide `~/.local/webhelm/platforms/NEW_PLATFORM.md` from the Actions checkout. All new manifests, Actions, tests, and readme files live only at `$HOME/.local/webhelm/platforms/<slug>/`, never inside this Skill or npm. Discover them through the existing runtime's local Actions checkout.
+
+## ChatGPT mandatory 3-MVP gate
+
+Any modification to the ChatGPT Runner/Queue or ChatGPT Actions contract must
+pass three real browser MVPs **after the final code edit**, before
+merge/push/live/clean: `new-thread`, direct `new-turn` in that same new Thread,
+and two separate FIFO queued `new-turn` messages in that Thread, both
+`SENT` with `send-clicked` receipts. Run
+`WEBHELM_MVP_ALLOW_SEND=1 npm run test:e2e:chatgpt-mvps` on the updated live
+daemon. The script is externally side-effecting and must not be invoked by
+ordinary `npm test`. An isolated manual Queue is diagnostic only, not native
+Queue gate evidence. Save the sanitized evidence and verify owned Session
+cleanup; never touch old uncertain queue rows.
