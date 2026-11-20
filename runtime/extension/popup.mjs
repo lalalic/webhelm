@@ -158,7 +158,7 @@ function renderWorkspaces(workspaces, busy, connected) {
 
 function renderQueue(items, busy, connected) {
   const signature=JSON.stringify({
-    items:items.map(item=>[item.id,item.platform,item.thread_id,item.title,item.url,item.state,item.attempts,item.created_at]),
+    items:items.map(item=>[item.id,item.platform,item.group,item.title,item.url,item.state,item.attempts,item.created_at]),
     busy,connected,
   });
   if(signature===lastQueueSignature)return;
@@ -168,7 +168,7 @@ function renderQueue(items, busy, connected) {
   const grouped=new Map();
   for(const item of items) {
     const platform=String(item.platform||'Queue');
-    const threadId=String(item.thread_id||item.id);
+    const threadId=String(item.group||item.id);
     if(!grouped.has(platform))grouped.set(platform,new Map());
     const threads=grouped.get(platform);
     if(!threads.has(threadId))threads.set(threadId,[]);
@@ -228,7 +228,6 @@ function renderQueue(items, busy, connected) {
           const meta=document.createElement('span');meta.className='queue-meta';
           const remove=actionButton('×',false,async()=>{
             try{
-              if(row.dataset.state==='UNCERTAIN' && !confirm('This send is unconfirmed. It may already have reached ChatGPT. Removing it may unblock later messages. Remove?'))return;
               const result=await rpc('workspace.control.queueCancel',{queueId:item.id});
               if(!result.id)throw Error('Missing queue request ID');
               el('message').textContent='Waiting for WebHelm daemon…';
@@ -240,17 +239,15 @@ function renderQueue(items, busy, connected) {
         const title=row.querySelector('.queue-title');
         title.textContent=item.title||platform+' message';
         title.title=(item.title||platform+' message')+
-          (item.state==='FAILED'?' — Send failed; no automatic retry.':
-           item.state==='UNCERTAIN'?' — Legacy unconfirmed send; check thread before removing.':'');
+          (item.state==='FAILED'?' — Action failed; no automatic retry.':'');
         row.dataset.queueId=item.id;
         row.dataset.state=item.state;
-        row.classList.toggle('queue-unconfirmed',item.state==='UNCERTAIN');
         row.classList.toggle('queue-failed',item.state==='FAILED');
         const elapsed=formatQueueElapsed(item.created_at,queueOpenedAtSeconds);
         const attempts=Math.max(0,Number(item.attempts)||0);
         row.querySelector('.queue-meta').textContent=(item.state==='FAILED'?'FAILED ':'')+'('+(elapsed??'–')+'/'+attempts+')';
         const remove=row.querySelector('.queue-remove');
-        const cancellable=['QUEUED','WAITING','BLOCKED','UNCERTAIN'].includes(item.state);
+        const cancellable=['QUEUED','WAITING'].includes(item.state);
         remove.disabled=!cancellable||busy||!connected;
         remove.title=cancellable?'Remove '+title.textContent+' from queue':'Cannot remove a running or completed submission';
         remove.setAttribute('aria-label',remove.title);

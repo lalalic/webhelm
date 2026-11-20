@@ -15,6 +15,9 @@ test('IPC absolute deadline survives a daemon trickling incomplete replies',asyn
   const clients=new Set();
   const server=createServer(client=>{
     clients.add(client);
+    // The client deliberately times out and disconnects while writes are pending.
+    // EPIPE is expected here, not an unhandled server failure.
+    client.on('error',()=>{});
     const trickle=setInterval(()=>{if(!client.destroyed)client.write('.');},20);
     client.on('close',()=>{clients.delete(client);clearInterval(trickle);});
     client.on('data',()=>{});

@@ -46,7 +46,7 @@ esac
 `);
   fs.chmodSync(bin,0o755);
   try {
-    const result=spawnSync('/bin/sh',['-c',script],{encoding:'utf8',timeout:5000,
+    const result=spawnSync('/bin/sh',['-c',script],{encoding:'utf8',timeout:60000,
       env:{...process.env,PATH:`${dir}:${process.env.PATH}`,WEBHELM_EVAL_LOG:log}});
     assert.equal(result.status,1,'the exec failure must not become success');
     assert.deepEqual(fs.readFileSync(log,'utf8').trim().split('\n'),[

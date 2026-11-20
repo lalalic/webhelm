@@ -55,10 +55,10 @@ export async function setStoredSite(chromeApi, url, enabled) {
   return {id:origin,enabled:Boolean(enabled)};
 }
 
-const priority = {FAILED:0,UNCERTAIN:0,BLOCKED:1,SENDING:2,CHECKING:2,WAITING:3,QUEUED:4};
+const priority = {FAILED:0,SENDING:1,CHECKING:1,WAITING:2,QUEUED:3};
 function threadKey(item) {
-  // Old queue adapters might not identify threads; don't merge unrelated IDs.
-  return `${item.platform||'Queue'}\u0000${item.thread_id||item.id}`;
+  // Queue groups are provided by registered Platform Policies.
+  return `${item.platform||'Queue'}\u0000${item.group||item.id}`;
 }
 
 export function compactQueue(items, {expanded=false,maxHeads=8}={}) {
@@ -76,10 +76,8 @@ export function compactQueue(items, {expanded=false,maxHeads=8}={}) {
   const headFor=new Map(heads.flatMap(x=>x.items.map(item=>[item.id,x.head])));
   const behind=new Map(heads.map(x=>[x.head.id,x.count-1]));
   const failed=all.filter(x=>x.state==='FAILED').length;
-  const uncertain=all.filter(x=>x.state==='UNCERTAIN').length;
-  const blocked=all.filter(x=>x.state==='BLOCKED').length;
   return {visible,total:all.length,threads:threads.size,behind,headFor,
-    hidden:all.length-visible.length,failed,uncertain,blocked};
+    hidden:all.length-visible.length,failed};
 }
 
 // Statuses describe what the user can do, not internal retry counters.
@@ -89,13 +87,9 @@ export function queueStatusText(item,{head=item,remaining=0}={}) {
   const following=head.id!==item.id;
   let message;
   if(following && head.state==='FAILED') message='Queued to send — previous attempt failed';
-  else if(following && ['UNCERTAIN','BLOCKED'].includes(head.state))
-    message=head.state==='UNCERTAIN' ? 'Waiting — previous send unconfirmed' : 'Waiting — previous message blocked';
   else if(following) message='Waiting behind earlier message';
   else message=({
-    FAILED:'Failed — Send click not confirmed; not retried',
-    UNCERTAIN:'Legacy unconfirmed send — pending migration',
-    BLOCKED:'Blocked — needs attention',
+    FAILED:'Action failed — not retried',
     SENDING:'Sending',
     CHECKING:'Checking delivery',
     WAITING:'Waiting to send',

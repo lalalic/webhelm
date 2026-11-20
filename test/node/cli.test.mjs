@@ -14,6 +14,12 @@ for(const platform of ['z','chatgpt']){
   const action=platform==='z'?'new-turn':'new-turn';
   writeFileSync(path.join(site,'manifest.yaml'),`platform: ${platform}\nactions:\n  ${action}: "actions/_new_turn.mjs"\n`);
   writeFileSync(path.join(site,'actions/_new_turn.mjs'),'export default async function run() { return true; }\n');
+  if (platform==='chatgpt') {
+    mkdirSync(path.join(site,'queues'),{recursive:true});
+    writeFileSync(path.join(site,'actions/_validate_new_turn_ready.mjs'),'export async function run() { return true; }\n');
+    writeFileSync(path.join(site,'manifest.yaml'),`platform: chatgpt\nactions:\n  new-turn: actions/_new_turn.mjs\n  validate-new-turn-ready: actions/_validate_new_turn_ready.mjs\n`);
+    writeFileSync(path.join(site,'queues/new-turn.mjs'),`export default {action:'new-turn',validate:'validate-new-turn-ready',group:x=>x.thread_id,title:x=>x.message||'Message'};\n`);
+  }
 }
 execFileSync('git',['init','-b','main'],{cwd:dir,stdio:'ignore'});
 execFileSync('git',['add','.'],{cwd:dir,stdio:'ignore'});
@@ -32,9 +38,10 @@ test('platform profile and JS source preserve CLI compatibility',()=>{
   assert.match(source.stdout,/export default async function/);
 });
 
-test('invalid queue action fails without sending a browser request',()=>{
-  const result=run('platform','run','chatgpt','new-turn');
-  assert.equal(result.status,1);assert.match(result.stderr,/thread_id and message or file required/);
+test('retired --mode flag is rejected locally without queue IPC or browser dispatch',()=>{
+  const result=run('platform','run','chatgpt','new-turn','--mode','async');
+  assert.equal(result.status,1);
+  assert.match(result.stderr,/--mode has been removed/);
 });
 
 test('setup/sync/publish commands are visible',()=>{

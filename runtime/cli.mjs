@@ -5,7 +5,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { ensureDaemon, request, SOCKET } from './node-daemon.mjs';
-import { PLATFORMS, listPlatforms, platformProfile, actionPath, validateConfig } from './platforms.mjs';
+import { PLATFORMS, listPlatforms, platformProfile, actionPath, validateConfig, queueForAction } from './platforms.mjs';
 import { ACTIONS_DIR, ensureActions, syncActions, publishActions } from './actions-repo.mjs';
 import { activateRuntime, currentRuntimePath, installLoginGuard, installRuntimeUpdate, migrateLegacyRuntimeCli, stageRuntimeForLoginGuard } from './login-guard.mjs';
 import { upgradeRuntime } from './auto-update.mjs';
@@ -29,52 +29,29 @@ function loadConfig(args) {
   return cfg;
 }
 
-function validateMode(platform, action, args, config) {
-  const isNewTurn = platform === 'chatgpt' && action === 'new-turn';
-  const override = arg(args, '--mode');
-  if (!isNewTurn && override !== undefined) throw Error('--mode is supported only for chatgpt/new-turn');
-  if (!isNewTurn) return null;
-  if ('sync' in config) throw Error('legacy sync is not supported; use mode: async or sync');
-  if (override !== undefined && 'mode' in config && override !== config.mode) throw Error('--mode conflicts with the new-turn config mode');
-  const mode = override ?? config.mode ?? 'async';
-  if (typeof mode !== 'string' || !['async', 'sync'].includes(mode)) throw Error('mode must be exactly async or sync');
-  if (mode === 'sync' && config.mergeable !== undefined && config.mergeable !== false) {
-    throw Error('mergeable is only supported in async mode');
-  }
-  return mode;
-}
-
 async function runPlatform(args) {
-  const platform = args[2], action = args[3]?.replaceAll('_', '-');
+  const platform = args[2], action = args[3];
   if (!platform || !action) throw Error('platform run requires PLATFORM ACTION');
   await ensureActions();
   actionPath(platform, action);
   const config = loadConfig(args);
-  const mode = validateMode(platform, action, args, config);
+  if (arg(args,'--mode') !== undefined) throw Error('--mode has been removed; use --session-id for direct execution or omit for a registered Queue');
   const sid = arg(args, '--session-id');
   if (sid) await requireCliSession(sid);
   const auto = has(args, '--auto-session');
   validateConfig(platform, action, config);
   if (sid && auto) throw Error('--session-id and --auto-session are mutually exclusive');
-  if (platform === 'chatgpt' && action === 'new-turn' && mode === 'async') {
-    if (sid || auto) throw Error('async new-turn cannot use browser session options');
-    if (!config.thread_id || (!config.message && !config.file?.length)) throw Error('thread_id and message or file required');
-    if (config.file !== undefined && (!Array.isArray(config.file) || config.file.length > 4 || config.file.some(f => typeof f !== 'string' || !path.isAbsolute(f) || !fs.existsSync(f)))) throw Error('file must contain at most 4 existing absolute paths');
-    if (typeof config.mergeable !== 'undefined' && typeof config.mergeable !== 'boolean') throw Error('mergeable must be a boolean');
-    const receipt = await request({op:'chatgpt-new-turn-enqueue', config: {...config, idempotency_key: config.idempotency_key || randomUUID(), mode}});
-    if (!receipt.ok || !receipt.queue_id || receipt.thread_id !== String(config.thread_id)) throw Error('ChatGPT queue returned an invalid acceptance receipt');
-    const project = config.project_id || null;
-    const prefix = project ? `/g/${encodeURIComponent(project)}` : '';
-    return {
-      platform, action, session_mode: 'durable_queue', self_heal_capable: false,
-      result: {ok:true, status:'submitted', mode:'new-turn', project_id:project,
-        thread_id:String(config.thread_id), thread_url:`https://chatgpt.com${prefix}/c/${encodeURIComponent(config.thread_id)}`,
-        verified_by:'durable-queue', user_message_id:null, queue_id: receipt.queue_id, state:receipt.state},
-    };
+  const registeredQueue=await queueForAction(platform,action);
+  if (registeredQueue && !sid && !auto) {
+    const receipt=await request({op:'queue-enqueue',platform,queue:registeredQueue,
+      config:{...config,idempotency_key:config.idempotency_key||randomUUID(),mergeable:config.mergeable??false}});
+    if (!receipt.ok || !receipt.queue_id) throw Error('queue returned an invalid acceptance receipt');
+    return {platform,action,session_mode:'durable_queue',self_heal_capable:false,
+      result:{ok:true,status:'queued',queue_id:receipt.queue_id,
+        group:receipt.group,state:receipt.state,queue:registeredQueue}};
   }
-  if (mode === 'sync' && (!sid || auto)) throw Error('sync new-turn requires a caller-owned --session-id');
   if (!sid && !auto) throw Error('platform run requires --session-id; use --auto-session only for one-shot actions');
-  return request({op:'platform-run', platform, action, config: {...config, ...(mode ? {mode} : {})},
+  return request({op:'platform-run', platform, action, config,
     session_id:sid, auto_session:auto, url:arg(args, '--url'), workspace:CLI_WORKSPACE});
 }
 

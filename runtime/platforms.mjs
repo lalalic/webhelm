@@ -39,7 +39,7 @@ export function platformProfile(platform) {
 export function actionPath(platform, action) {
   const manifest = platformManifest(platform);
   const name = namePart(action.replaceAll('_', '-'));
-  const relative = manifest.actions?.[name];
+  const relative = manifest.actions?.[action] || manifest.actions?.[name];
   if (typeof relative !== 'string' || !/^actions\/[\w-]+\.mjs$/.test(relative)) {
     throw new Error(`unknown or non-Node platform action ${platform}/${name}`);
   }
@@ -86,4 +86,23 @@ export async function invokePlatformAction(platform, action, { helpers, config, 
   const runner = module.run || module.default;
   if (typeof runner !== 'function') throw new Error(`Node action does not export a run function: ${platform}/${action}`);
   return runner({ helpers, config, log });
+}
+
+/** Find the queue whose policy dispatches an Action. Never infer registration from
+ *  a manifest key; the daemon watches the same queues/ directory. */
+export async function queueForAction(platform, action) {
+  const dir=path.join(PLATFORMS,namePart(platform),'queues');
+  if (!fs.existsSync(dir)) return null;
+  let match=null;
+  for (const entry of fs.readdirSync(dir,{withFileTypes:true})) {
+    if (!entry.isFile() || !/^[a-z0-9-]+\.mjs$/.test(entry.name)) continue;
+    const file=path.join(dir,entry.name);
+    const stat=fs.statSync(file);
+    const module=await import(pathToFileURL(file).href+`?version=${stat.mtimeMs}-${stat.size}`);
+    if (module.default?.action === action) {
+      if (match) throw Error(`multiple queues registered for ${platform}/${action}; enqueue by queue name`);
+      match=entry.name.slice(0,-4);
+    }
+  }
+  return match;
 }

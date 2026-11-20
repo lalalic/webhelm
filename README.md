@@ -1,6 +1,6 @@
 # WebHelm
 
-[WebHelm](https://github.com/lalalic/webhelm) is a Node.js CLI and agent Skill for a visible, managed Chrome instance. One Runtime daemon controls CDP, persistent JavaScript browser Sessions, Chrome Tab Groups, and durable ChatGPT FIFO delivery.
+[WebHelm](https://github.com/lalalic/webhelm) is a Node.js CLI and agent Skill for a visible, managed Chrome instance. One Runtime daemon controls CDP, persistent JavaScript browser Sessions, Chrome Tab Groups, and durable Platform-registered FIFO queues.
 
 ## Two repositories, independent releases
 
@@ -54,7 +54,7 @@ The scheduled job does not depend on the npx cache. For immediate checking use
 
 **No active Session is interrupted.** Before cutover, the daemon atomically
 checks that no Sessions, pending leases, IPC operations or queue workers are
-running, then pauses new browser work. New queued ChatGPT turns remain durable
+running, then pauses new browser work. New queued Platform actions remain durable
 and are accepted during the short cutover. The updater switches the stable
 Runtime pointer, waits for the idle daemon to stop gracefully, starts the
 new daemon against the existing Chrome/profile/queue, and verifies its version.
@@ -83,13 +83,13 @@ the actual `message`. If the combined text exceeds 2,000 characters, WebHelm
 uploads the exact original `message` as `prompt.md` and keeps the optional
 context in the visible composer before `Read prompt.md...`. Omitting the
 option preserves the old short composer and attachment behavior. Durable
-queued `newTurn` persists the context and checks it for idempotency.
+queued `newTurn` queue Policy persists the context and checks it for idempotency.
 
 ## WebHelm Chrome Extension control panel
 
 The daemon-managed Chrome Extension is installed from the npm Runtime and does not require the Chrome Web Store. Click the WebHelm toolbar icon to see daemon connectivity, each configured workspace's available capacity and current Session count. The toolbar badge shows the number of **active daemon Sessions** across all workspaces (including `0` when idle). `!` means the daemon heartbeat is stale and `?` means the Session count is unknown. The popup separately shows pool availability and idle tabs.
 
-The compact popup shows daemon connectivity and per-workspace capacity and Session counts, with confirmation before stopping a Session or clearing Sessions in one workspace. The popup does not include a global stop-all action. These actions are executed by the same Node daemon as the CLI, over the existing CDP-backed Extension RPC. No shell access or HTTP listener is granted to the Extension. The persistent ChatGPT queue is not deleted, and queued work may create new Sessions afterward.
+The compact popup shows daemon connectivity and per-workspace capacity and Session counts, with confirmation before stopping a Session or clearing Sessions in one workspace. The popup does not include a global stop-all action. These actions are executed by the same Node daemon as the CLI, over the existing CDP-backed Extension RPC. No shell access or HTTP listener is granted to the Extension. Persistent Platform queues are not deleted, and queued work may create new Sessions afterward.
 
 New installations use the default Chrome tab group `WebHelm` and the idle page `helm.html`. Idle URLs use only `workspace` and `role=idle`; Lease URLs use Chrome's actual `tabId` for initial CDP target discovery. There is no separate slot identity. Every newly created WebHelm-managed tab group (default and custom) is placed at the far left of its Chrome window, immediately after pinned tabs. Existing groups retain their user-chosen position during restoration, legacy migration and Session allocation. Chrome-saved tab group shortcuts in the bookmarks bar are separate from active groups and cannot safely be deduplicated through the Extension API. Legacy `Harness` default groups migrate only when their tabs are idle. Custom workspace names are unchanged; the old `workspace.html` path and lease titles remain readable until their Sessions finish. Closing an allocated Session returns its managed tabs to the idle page, retaining physical Chrome targets, while unleased popup children are closed. **A new lease only selects an actual `role=idle` extension tab with no pending navigation, excluding every tab owned by a live or pending daemon Session.** A briefly idle-looking URL is never sufficient to reclaim an active Session; stale Sessions are recovered only after the inactivity timeout. Do not manually remove active managed tabs.
 
@@ -142,7 +142,7 @@ The Platform Action implementation and its verification belong in
 
 ## Architecture and compatibility
 
-The Runtime stores the Chrome profile under `~/.local/webhelm/chrome` and the persistent FIFO queue and IPC socket under `~/.config/webhelm/runtime/`. The runtime refuses to start against a conflicting Chrome profile rather than silently replacing an existing login. Session idle GC runs on Node before new Session allocation (5 minutes without operations or explicit heartbeat); no background sweep is started. A timed-out Session refuses subsequent exec, platform Actions and heartbeat, while already-issued browser effects retain tab ownership until settled. A stop that times out while queued cannot execute a late release, and a stop already physically releasing keeps its Session closing until the release finishes. Managed tabs are navigated back to their Extension idle URL instead of closing CDP targets; the Extension does not use `tab.lastAccessed` GC. An async Session execution has a finite deadline: if it expires, its helper capabilities are revoked and the poisoned Session is collected on the next Tab request (or immediately by an explicit stop). Session stop also has a bounded drain/release deadline and cannot leave a permanent closing flag. Client IPC requests have an independent absolute timeout and return an error if the daemon does not respond. These safeguards do not introduce periodic background GC. Only one daemon is permitted to own the queue. A CLI package update does not kill a running daemon or close another agent's tabs; upgrade daemons when idle.
+The Runtime stores the Chrome profile under `~/.local/webhelm/chrome` and the persistent FIFO queues and IPC socket under `~/.config/webhelm/runtime/`. The runtime refuses to start against a conflicting Chrome profile rather than silently replacing an existing login. Session idle GC runs on Node before new Session allocation (5 minutes without operations or explicit heartbeat); no background sweep is started. A timed-out Session refuses subsequent exec, platform Actions and heartbeat, while already-issued browser effects retain tab ownership until settled. A stop that times out while queued cannot execute a late release, and a stop already physically releasing keeps its Session closing until the release finishes. Managed tabs are navigated back to their Extension idle URL instead of closing CDP targets; the Extension does not use `tab.lastAccessed` GC. An async Session execution has a finite deadline: if it expires, its helper capabilities are revoked and the poisoned Session is collected on the next Tab request (or immediately by an explicit stop). Session stop also has a bounded drain/release deadline and cannot leave a permanent closing flag. Client IPC requests have an independent absolute timeout and return an error if the daemon does not respond. These safeguards do not introduce periodic background GC. Only one daemon is permitted to own the queue. A CLI package update does not kill a running daemon or close another agent's tabs; upgrade daemons when idle.
 
 NeoY and Relay can continue using `webhelm` session commands, `result.stdout` JSON receipts, and `admin_helper` returned by `status`. An `admin_helper` inside the installed Skill is a stable connector to the same Node IPC socket. `webhelm capacity` replaces the legacy Python capacity probe.
 

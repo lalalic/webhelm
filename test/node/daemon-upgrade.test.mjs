@@ -23,10 +23,20 @@ function send(socket,op,extra={}) {
 
 test('real isolated daemon has an atomic upgrade gate and graceful commit',async()=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'webhelm-upgrade-daemon-'));
+  // Stale former-ChatGPT data is not imported, parsed or replayed.
+  fs.writeFileSync(path.join(root,'chatgpt-new-turn.sqlite3'),'retired old queue data');
   const socket=path.join(root,'server.sock');
   const lock=path.join(root,'daemon.lock');
+  const platformDir=path.join(root,'platforms'),site=path.join(platformDir,'chatgpt');
+  fs.mkdirSync(path.join(site,'queues'),{recursive:true});
+  fs.mkdirSync(path.join(site,'actions'),{recursive:true});
+  fs.writeFileSync(path.join(site,'manifest.yaml'),`platform: chatgpt\nactions:\n  new-turn: actions/_new_turn.mjs\n  validate-new-turn-ready: actions/_validate_new_turn_ready.mjs\n`);
+  fs.writeFileSync(path.join(site,'actions/_new_turn.mjs'),'export async function run() { return {status:"submitted"}; }');
+  fs.writeFileSync(path.join(site,'actions/_validate_new_turn_ready.mjs'),'export async function run() { return true; }');
+  fs.writeFileSync(path.join(site,'queues/new-turn.mjs'),`export default {action:'new-turn',validate:'validate-new-turn-ready',group:x=>x.thread_id,title:x=>x.message||'Message'};`);
+
   const child=spawn(process.execPath,[daemon,'daemon'],{env:{...process.env,
-    WEBHELM_RUNTIME_DIR:root, WEBHELM_SOCKET:socket, WEBHELM_LOCK:lock,
+    WEBHELM_RUNTIME_DIR:root, WEBHELM_SOCKET:socket, WEBHELM_LOCK:lock, WEBHELM_PLATFORM_DIR:platformDir,
     WEBHELM_CDP_URL:'http://127.0.0.1:1',WEBHELM_SITE_HEARTBEAT_POLL_MS:'600000'},
     stdio:'ignore'});
   try{
@@ -38,6 +48,8 @@ test('real isolated daemon has an atomic upgrade gate and graceful commit',async
     assert.equal(alive,true,'isolated daemon did not start');
     const ping=await send(socket,'ping');
     assert.equal(ping.ok,true);
+    assert.match((await send(socket,'chatgpt-new-turn-enqueue',{config:{}})).error,/unknown op/);
+    assert.deepEqual((await send(socket,'queue-list')).items,[],'retired database must not be loaded');
     let prepare;
     for(let i=0;i<100;i++){
       prepare=await send(socket,'upgrade-prepare');
@@ -46,7 +58,7 @@ test('real isolated daemon has an atomic upgrade gate and graceful commit',async
       await delay(100);
     }
     assert.equal(prepare.ready,true,'isolated daemon did not become safe to upgrade');
-    const accepted=await send(socket,'chatgpt-new-turn-enqueue',{config:{
+    const accepted=await send(socket,'queue-enqueue',{platform:'chatgpt',queue:'new-turn',config:{
       thread_id:'isolated-upgrade-thread',message:'Durable queued turn',idempotency_key:'isolated-upgrade-key'}});
     assert.equal(accepted.ok,true);
     assert.equal((await send(socket,'queue-list')).items.some(item=>item.queue_id===accepted.queue_id),true);
@@ -72,7 +84,7 @@ test('explicit force sends SIGTERM only to an isolated, positively identified da
   const socket=path.join(root,'server.sock'),lock=path.join(root,'daemon.lock');
   const child=spawn(process.execPath,[daemon,'daemon'],{env:{...process.env,
     WEBHELM_RUNTIME_DIR:root,WEBHELM_SOCKET:socket,WEBHELM_LOCK:lock,
-    WEBHELM_CDP_URL:'http://127.0.0.1:1',WEBHELM_CHATGPT_QUEUE_PAUSED:'1',
+    WEBHELM_CDP_URL:'http://127.0.0.1:1',WEBHELM_QUEUE_PAUSED:'1',
     WEBHELM_SITE_HEARTBEAT_POLL_MS:'600000'},stdio:'ignore'});
   try{
     let ping;

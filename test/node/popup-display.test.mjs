@@ -44,50 +44,48 @@ test('Keep Alive site fallback ignores invalid state and removes only requested 
 });
 
 test('queue defaults to distinct thread heads; preserves every pending record unchanged',()=>{
-  const rows=[{id:'a',thread_id:'one',state:'UNCERTAIN',attempts:1,platform:'ChatGPT'},
-    ...Array.from({length:99},(_,i)=>({id:`q${i}`,thread_id:'one',state:'QUEUED',attempts:0,platform:'ChatGPT'})),
-    {id:'b',thread_id:'two',state:'BLOCKED',platform:'ChatGPT'},
-    {id:'c',thread_id:'three',state:'UNCERTAIN',platform:'ChatGPT'}];
+  const rows=[{id:'a',group:'one',state:'WAITING',attempts:1,platform:'ChatGPT'},
+    ...Array.from({length:99},(_,i)=>({id:`q${i}`,group:'one',state:'QUEUED',attempts:0,platform:'ChatGPT'})),
+    {id:'b',group:'two',state:'WAITING',platform:'ChatGPT'},
+    {id:'c',group:'three',state:'WAITING',platform:'ChatGPT'}];
   const before=JSON.stringify(rows);
   const compact=compactQueue(rows);
   assert.equal(compact.total,102);
   assert.equal(compact.threads,3);
-  assert.deepEqual(compact.visible.map(x=>x.id),['a','c','b']);
+  assert.deepEqual(compact.visible.map(x=>x.id),['a','b','c']);
   assert.equal(compact.behind.get('a'),99);
   assert.equal(compact.hidden,99);
-  assert.equal(compact.uncertain,2);
-  assert.equal(compact.blocked,1);
   assert.equal(JSON.stringify(rows),before,'display folding must never mutate the durable queue');
   const expanded=compactQueue(rows,{expanded:true});
   assert.equal(expanded.visible.length,102);
   assert.equal(expanded.hidden,0);
 });
 
-test('same-thread unconfirmed send is one thread with a blocked follow-up, not independent queued work',()=>{
+test('same-group waiting action is one group with a queued follow-up',()=>{
   const rows=[
-    {id:'first',thread_id:'same',platform:'ChatGPT',state:'UNCERTAIN',attempts:1},
-    {id:'second',thread_id:'same',platform:'ChatGPT',state:'QUEUED',attempts:0},
+    {id:'first',group:'same',platform:'ChatGPT',state:'WAITING',attempts:1},
+    {id:'second',group:'same',platform:'ChatGPT',state:'QUEUED',attempts:0},
   ];
   const folded=compactQueue(rows);
   assert.equal(folded.threads,1);
   assert.deepEqual(folded.visible.map(x=>x.id),['first']);
   assert.equal(queueStatusText(rows[0],{remaining:folded.behind.get('first')}),
-    'Legacy unconfirmed send — pending migration · 1 later message waiting');
+    'Waiting to send · 1 later message waiting');
   const full=compactQueue(rows,{expanded:true});
   assert.deepEqual(full.visible.map(x=>x.id),['first','second']);
   assert.equal(full.headFor.get('second'),rows[0]);
   assert.equal(queueStatusText(rows[1],{head:full.headFor.get('second')}),
-    'Waiting — previous send unconfirmed');
+    'Waiting behind earlier message');
   assert.equal(rows[0].attempts,1);
   assert.equal(rows[1].attempts,0);
 });
 
 test('expanded queue keeps each thread contiguous under its head',()=>{
   const rows=[
-    {id:'first',thread_id:'a',platform:'ChatGPT',state:'UNCERTAIN'},
-    {id:'second',thread_id:'b',platform:'ChatGPT',state:'QUEUED'},
-    {id:'third',thread_id:'a',platform:'ChatGPT',state:'QUEUED'},
-    {id:'fourth',thread_id:'b',platform:'ChatGPT',state:'QUEUED'},
+    {id:'first',group:'a',platform:'ChatGPT',state:'WAITING'},
+    {id:'second',group:'b',platform:'ChatGPT',state:'QUEUED'},
+    {id:'third',group:'a',platform:'ChatGPT',state:'QUEUED'},
+    {id:'fourth',group:'b',platform:'ChatGPT',state:'QUEUED'},
   ];
   assert.deepEqual(compactQueue(rows,{expanded:true}).visible.map(x=>x.id),
     ['first','third','second','fourth']);
@@ -96,7 +94,7 @@ test('expanded queue keeps each thread contiguous under its head',()=>{
 });
 
 test('queue preview limits many threads but preserves row actions when expanded',()=>{
-  const items=Array.from({length:22},(_,i)=>({id:`m${i}`,thread_id:`t${i}`,state:'QUEUED',platform:'ChatGPT'}));
+  const items=Array.from({length:22},(_,i)=>({id:`m${i}`,group:`t${i}`,state:'QUEUED',platform:'ChatGPT'}));
   const preview=compactQueue(items,{maxHeads:8});
   assert.equal(preview.visible.length,8);
   assert.equal(preview.hidden,14);
@@ -118,13 +116,13 @@ test('legacy running worker menu respects persisted hidden groups',async()=>{
 
 test('FAILED is terminal and does not imply that a later queued turn is blocked',()=>{
   const items=[
-    {id:'failed',thread_id:'same',platform:'ChatGPT',state:'FAILED'},
-    {id:'next',thread_id:'same',platform:'ChatGPT',state:'QUEUED'},
+    {id:'failed',group:'same',platform:'ChatGPT',state:'FAILED'},
+    {id:'next',group:'same',platform:'ChatGPT',state:'QUEUED'},
   ];
   const queue=compactQueue(items,{expanded:true});
   assert.equal(queue.failed,1);
   assert.equal(queueStatusText(items[0],{remaining:1}),
-    'Failed — Send click not confirmed; not retried · 1 later message queued');
+    'Action failed — not retried · 1 later message queued');
   assert.equal(queueStatusText(items[1],{head:items[0]}),
     'Queued to send — previous attempt failed');
 });

@@ -8,7 +8,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { invokePlatformAction } from './platforms.mjs';
 import {createSiteKeepaliveScheduler} from './site-keepalive.mjs';
-import { ChatGPTQueue } from './chatgpt/chatgpt-queue.mjs';
+import { PlatformQueueRegistry } from './queue-registry.mjs';
 import { idleUrlFromIdentity, sameIdleUrl, staleSession, withinDeadline, SessionDeadlineError } from './session-lifecycle.mjs';
 import { stopMatchingSessions } from './session-control.mjs';
 import { ensureManagedChrome } from './chrome.mjs';
@@ -35,25 +35,22 @@ function ownedLeaseTabIds() {
 }
 const pending = new Map();
 let socket, nextId = 1, browserWs, connected = false, reconnecting = false, shuttingDown = false;
-let chatgptQueue, managedChrome;
+let queueRegistry, queueRegistryInit, managedChrome;
 let upgradePending=false, upgradeTimeout=null, activeRequests=0, pendingSessionStarts=0;
 function releaseUpgrade() {
   clearTimeout(upgradeTimeout); upgradeTimeout=null;
   if(!upgradePending)return;
   upgradePending=false;
-  if(chatgptQueue && process.env.WEBHELM_CHATGPT_QUEUE_PAUSED!=='1'){
-    chatgptQueue.started=false;
-    chatgptQueue.start();
-  }
+  if(queueRegistry && process.env.WEBHELM_QUEUE_PAUSED!=='1')queueRegistry.setPaused(false);
 }
 async function prepareUpgrade() {
   if(upgradePending)return {ok:true,deferred:true,reason:'already_preparing'};
   // The test and gate run within one event-loop turn, before any awaited work.
   if(activeRequests!==1 || sessions.size || pendingSessionStarts || pendingLeaseTabIds.size ||
-      controlPollActive || getChatGPTQueue().active.size)
+      controlPollActive || (queueRegistry?.activeCount()||0))
     return {ok:true,deferred:true,reason:'daemon_busy',session_count:sessions.size};
   upgradePending=true;
-  await chatgptQueue.stopScheduler(); // No active worker may cross this gate.
+  if(queueRegistry)await queueRegistry.stopScheduler(); // No worker may cross this gate.
   upgradeTimeout=setTimeout(releaseUpgrade,60000);
   upgradeTimeout.unref?.();
   return {ok:true,ready:true,pid:process.pid,version:PACKAGE_VERSION};
@@ -620,19 +617,22 @@ async function workspaceOp(req) {
     return extensionCall(null,'workspace.delete',{name:req.name,force:Boolean(req.force)});
   throw Error(`unknown workspace operation: ${req.op}`);
 }
-function getChatGPTQueue() {
-  if (chatgptQueue) return chatgptQueue;
-  chatgptQueue = new ChatGPTQueue({
-    persistenceRoot: RUNTIME,
-    startSession: ({url}) => createSession({url}),
-    execSession: (session_id, code) => execute({session_id, code}),
-    stopSession,
-    logger: entry => console.error(JSON.stringify({component:'chatgpt-queue',...entry})),
-  });
-  // Keep the durable queue intact during a cutover smoke check. A paused
-  // daemon accepts queue writes but never starts its dispatcher.
-  if(process.env.WEBHELM_CHATGPT_QUEUE_PAUSED!=='1')chatgptQueue.start();
-  return chatgptQueue;
+async function getQueueRegistry() {
+  if(queueRegistry) return queueRegistry;
+  if(!queueRegistryInit){
+    const instance=new PlatformQueueRegistry({
+      persistenceRoot:RUNTIME,
+      startSession:({url,workspace})=>createSession({url,workspace}),
+      stopSession,
+      runAction:runPlatform,
+      paused:process.env.WEBHELM_QUEUE_PAUSED==='1',
+      logger:entry=>console.error(JSON.stringify({component:'queue-registry',...entry})),
+    });
+    queueRegistryInit=instance.start().then(()=>{queueRegistry=instance;return instance;}).catch(error=>{
+      queueRegistryInit=null;throw error;
+    });
+  }
+  return queueRegistryInit;
 }
 
 async function workspaceCapacity(req={}) {
@@ -668,13 +668,13 @@ async function pollExtensionControl() {
   if (controlPollActive || shuttingDown) return;
   controlPollActive = true;
   try {
-    const pendingAction = await extensionCall(null,'workspace.control.poll',{sessions:visibleSessions(),queue:getChatGPTQueue().list().items});
+    const pendingAction = await extensionCall(null,'workspace.control.poll',{sessions:visibleSessions(),queue:(await getQueueRegistry()).list().items});
     if (!pendingAction) return;
     const {id,action,sessionId} = pendingAction;
     // Keep the status panel fresh while a lengthy Session stop waits for
     // browser navigation or an in-flight task.
     const controlHeartbeat=setInterval(()=>{
-      extensionCall(null,'workspace.control.heartbeat',{sessions:visibleSessions(),queue:getChatGPTQueue().list().items})
+      extensionCall(null,'workspace.control.heartbeat',{sessions:visibleSessions(),queue:queueRegistry?.list().items||[]})
         .catch(error=>console.warn(`WebHelm control heartbeat: ${error.message}`));
     },3000);
     let response;
@@ -686,7 +686,7 @@ async function pollExtensionControl() {
       } else if (action === 'stop') {
         response = {ok:true,stopped:await stopSession(sessionId)};
       } else if (action === 'queue-cancel') {
-        response = getChatGPTQueue().cancel(pendingAction.queueId);
+        response = (await getQueueRegistry()).cancel(pendingAction.queueId);
       } else {
         throw Error('Unknown extension control action');
       }
@@ -696,7 +696,7 @@ async function pollExtensionControl() {
       clearInterval(controlHeartbeat);
     }
     await extensionCall(null,'workspace.control.complete',{id,response});
-    await extensionCall(null,'workspace.control.poll',{sessions:visibleSessions(),queue:getChatGPTQueue().list().items});
+    await extensionCall(null,'workspace.control.poll',{sessions:visibleSessions(),queue:queueRegistry?.list().items||[]});
   } catch(error) {
     console.warn(`WebHelm extension control sync failed: ${error.message}`);
   } finally {
@@ -753,10 +753,10 @@ async function runPlatform(req) {
     cleanup=auto ? await stopSession(sid).catch(e=>({release_error:e.message})) : {caller_owned_session:true};
   }
   result.cleanup=cleanup;
-  if (platform==='chatgpt' && action==='new-turn' && config.mode==='sync' && result.ok) {
-    if (result.value?.status!=='submitted' || result.value?.thread_id!==String(config.thread_id) || !result.value?.verified_by) {
-      result={ok:false,error:'synchronous ChatGPT new-turn did not return a verified submission receipt',cleanup};
-    } else Object.assign(result,result.value);
+  // Action completion/receipt semantics belong to the Platform, not this runner.
+  if (result.ok && result.value && typeof result.value==='object' && !Array.isArray(result.value)) {
+    const {ok,cleanup,...fields}=result.value;
+    Object.assign(result,fields);
   }
   return {platform,action,workspace_supported:started.workspace_supported??null,
     session_mode:auto?'auto_session_no_self_heal':'caller_owned_self_heal_capable',
@@ -781,7 +781,7 @@ const siteKeepalive = createSiteKeepaliveScheduler({
 
 export async function handle(req){
   if(upgradePending && !['ping','upgrade-release','upgrade-commit',
-    'chatgpt-new-turn-enqueue','queue-list','queue-cancel'].includes(req.op))
+    'queue-enqueue','queue-list','queue-cancel'].includes(req.op))
     throw Error('WebHelm Runtime upgrade in progress; retry request');
   switch(req.op){
   case'upgrade-prepare':return prepareUpgrade();
@@ -792,7 +792,7 @@ export async function handle(req){
     setTimeout(()=>process.kill(process.pid,'SIGTERM'),150).unref();
     return {ok:true,stopping:true,pid:process.pid};
   }
-  case'ping':return {ok:true,pid:process.pid,version:PACKAGE_VERSION,queue_paused:process.env.WEBHELM_CHATGPT_QUEUE_PAUSED==='1',session_count:sessions.size,managed_chrome:managedChrome||{profile_dir:PROFILE_DIR, endpoint:process.env.WEBHELM_CDP_URL||'http://127.0.0.1:9222',reused:true},chrome_guard:managedChromeGuard.status()};case'guard-check':{let status=await managedChromeGuard.tick();for(let retry=0;retry<6 && status.status!=='healthy' && !status.skipped;retry++){await delay(800);status=await managedChromeGuard.tick();}if(status.status!=='healthy' && !status.skipped)throw Error(`WebHelm Chrome health degraded: ${status.error||status.status}`);return {ok:true,chrome_guard:status};}case'heartbeat':return heartbeatSession(req.session_id);case'list':return {session_count:sessions.size,sessions:[...sessions.values()].map(s=>({session_id:s.session_id,workspace:s.workspace,target_id:s.targetId,last_used_at:s.last_used_at}))};case'start':return createSession(req);case'exec':return execute(req);case'stop':return stopSession(req.session_id);case'stop-all':return stopAllSessions();case'stop-workspace':{if(typeof req.workspace!=='string'||!req.workspace.trim())throw Error('workspace required');return stopWorkspaceSessions(req.workspace)}case'capacity':return workspaceCapacity(req);case'workspace-create':case'workspace-configure':case'workspace-resize':case'workspace-delete':return workspaceOp(req);case'chatgpt-new-turn-enqueue':return getChatGPTQueue().enqueue(req.config);case'queue-list':return getChatGPTQueue().list();case'queue-cancel':return getChatGPTQueue().cancel(req.queue_id);case'platform-run':return runPlatform(req);default:throw Error(`unknown op: ${req.op}`)}}
+  case'ping':return {ok:true,pid:process.pid,version:PACKAGE_VERSION,queue_paused:process.env.WEBHELM_QUEUE_PAUSED==='1',session_count:sessions.size,managed_chrome:managedChrome||{profile_dir:PROFILE_DIR, endpoint:process.env.WEBHELM_CDP_URL||'http://127.0.0.1:9222',reused:true},chrome_guard:managedChromeGuard.status()};case'guard-check':{let status=await managedChromeGuard.tick();for(let retry=0;retry<6 && status.status!=='healthy' && !status.skipped;retry++){await delay(800);status=await managedChromeGuard.tick();}if(status.status!=='healthy' && !status.skipped)throw Error(`WebHelm Chrome health degraded: ${status.error||status.status}`);return {ok:true,chrome_guard:status};}case'heartbeat':return heartbeatSession(req.session_id);case'list':return {session_count:sessions.size,sessions:[...sessions.values()].map(s=>({session_id:s.session_id,workspace:s.workspace,target_id:s.targetId,last_used_at:s.last_used_at}))};case'start':return createSession(req);case'exec':return execute(req);case'stop':return stopSession(req.session_id);case'stop-all':return stopAllSessions();case'stop-workspace':{if(typeof req.workspace!=='string'||!req.workspace.trim())throw Error('workspace required');return stopWorkspaceSessions(req.workspace)}case'capacity':return workspaceCapacity(req);case'workspace-create':case'workspace-configure':case'workspace-resize':case'workspace-delete':return workspaceOp(req);case'queue-enqueue':return (await getQueueRegistry()).enqueue(req);case'queue-list':return (await getQueueRegistry()).list();case'queue-cancel':return (await getQueueRegistry()).cancel(req.queue_id);case'platform-run':return runPlatform(req);default:throw Error(`unknown op: ${req.op}`)}}
 export function serve(conn) {
   let buffer = '', dispatched = false;
   conn.on('error',()=>{ /* A disconnected client must not crash the daemon. */ });
@@ -819,12 +819,12 @@ export function serve(conn) {
   });
 }
 
-async function main(){fs.mkdirSync(RUNTIME,{recursive:true,mode:0o700});let lockfd;try{lockfd=fs.openSync(LOCK,'wx',0o600);fs.writeFileSync(lockfd,String(process.pid))}catch{throw Error(`Node pilot lock exists: ${LOCK}`)}if(fs.existsSync(SOCKET)){try{const c=net.createConnection(SOCKET);await new Promise((res,rej)=>{c.once('connect',res);c.once('error',rej)});c.destroy();fs.closeSync(lockfd);fs.unlinkSync(LOCK);throw Error(`Node daemon socket already active: ${SOCKET}`)}catch(e){if(e.message.includes('already active'))throw e;fs.unlinkSync(SOCKET)}}socket=net.createServer(serve);await new Promise((res,rej)=>socket.listen(SOCKET,res).once('error',rej));fs.chmodSync(SOCKET,0o600);connectBrowser().catch(()=>{});managedChromeGuard.start();getChatGPTQueue();
+async function main(){fs.mkdirSync(RUNTIME,{recursive:true,mode:0o700});let lockfd;try{lockfd=fs.openSync(LOCK,'wx',0o600);fs.writeFileSync(lockfd,String(process.pid))}catch{throw Error(`Node pilot lock exists: ${LOCK}`)}if(fs.existsSync(SOCKET)){try{const c=net.createConnection(SOCKET);await new Promise((res,rej)=>{c.once('connect',res);c.once('error',rej)});c.destroy();fs.closeSync(lockfd);fs.unlinkSync(LOCK);throw Error(`Node daemon socket already active: ${SOCKET}`)}catch(e){if(e.message.includes('already active'))throw e;fs.unlinkSync(SOCKET)}}socket=net.createServer(serve);await new Promise((res,rej)=>socket.listen(SOCKET,res).once('error',rej));fs.chmodSync(SOCKET,0o600);connectBrowser().catch(()=>{});managedChromeGuard.start();await getQueueRegistry();
   const controlTimer=setInterval(()=>pollExtensionControl(),3000);
   const siteTimer=setInterval(()=>siteKeepalive.tick().catch(e=>console.warn(`WebHelm site keep-alive: ${e.message}`)),Math.max(1000,Number(process.env.WEBHELM_SITE_HEARTBEAT_POLL_MS)||30000));
   pollExtensionControl().catch(()=>{});
   siteKeepalive.tick().catch(()=>{});
-  const cleanup=async()=>{if(shuttingDown)return;shuttingDown=true;clearInterval(controlTimer);clearInterval(siteTimer);managedChromeGuard.stop();if(chatgptQueue)await chatgptQueue.shutdown().catch(()=>{});await handle({op:'stop-all'}).catch(()=>{});socket?.close();try{if(fs.existsSync(SOCKET))fs.unlinkSync(SOCKET)}catch{}try{fs.closeSync(lockfd);fs.unlinkSync(LOCK)}catch{}process.exit(0)};process.on('SIGTERM',cleanup);process.on('SIGINT',cleanup)}
+  const cleanup=async()=>{if(shuttingDown)return;shuttingDown=true;clearInterval(controlTimer);clearInterval(siteTimer);managedChromeGuard.stop();if(queueRegistry)await queueRegistry.shutdown().catch(()=>{});await handle({op:'stop-all'}).catch(()=>{});socket?.close();try{if(fs.existsSync(SOCKET))fs.unlinkSync(SOCKET)}catch{}try{fs.closeSync(lockfd);fs.unlinkSync(LOCK)}catch{}process.exit(0)};process.on('SIGTERM',cleanup);process.on('SIGINT',cleanup)}
 // IPC duration is independent of the daemon's JS/Action execution timeout.
 // A wedged daemon can no longer strand CLI processes indefinitely.
 export function ipcTimeoutMs(op) {

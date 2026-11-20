@@ -250,7 +250,7 @@ Example:
 Usage:
   webhelm platform run PLATFORM ACTION --session-id SESSION_ID [--config FILE] [--url URL]
   webhelm platform run PLATFORM ACTION --auto-session [--config FILE] [--url URL]
-  webhelm platform run chatgpt new-turn [--config FILE] [--mode async|sync] [--session-id ID]
+  webhelm platform run PLATFORM QUEUED_ACTION [--config FILE]
 
 Arguments:
   PLATFORM       Site name from 'webhelm platform list'
@@ -261,18 +261,18 @@ Options:
   --auto-session  Create and release a Session for one self-contained Action
   --config FILE   Read a JSON object of Action-specific inputs (default: {})
   --url URL       Optional initial URL for a browser Action
-  --mode MODE     Only for chatgpt/new-turn: async (default) or sync
   -h, --help     Show help without executing an Action
 
---session-id and --auto-session cannot be combined. For chatgpt/new-turn,
-async mode uses no Session option; sync mode requires --session-id.
+--session-id and --auto-session cannot be combined. A Platform Policy in
+queues/*.mjs makes a no-Session invocation asynchronous and durable; providing
+--session-id runs the declared Action directly. No mode flag or config field.
 Inspect 'platform profile' and 'platform source' for Action-specific inputs.
 Output: JSON Action result. An accepted submission may require later verification.
 
 Examples:
   webhelm platform run z new-turn --session-id SESSION_ID --config ./turn.json
   webhelm platform run chatgpt new-turn --config ./turn.json
-  webhelm platform run chatgpt new-turn --mode sync --session-id SESSION_ID --config ./turn.json`,
+  webhelm platform run chatgpt new-turn --session-id SESSION_ID --config ./turn.json`,
   'platform sync': `webhelm platform sync — update installed site Actions
 
 Usage:
