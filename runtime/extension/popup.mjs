@@ -239,13 +239,16 @@ function renderQueue(items, busy, connected) {
         }
         const title=row.querySelector('.queue-title');
         title.textContent=item.title||platform+' message';
-        title.title=(item.title||platform+' message')+(item.state==='UNCERTAIN'?' — Send not confirmed; check thread before removing.':'');
+        title.title=(item.title||platform+' message')+
+          (item.state==='FAILED'?' — Send failed; no automatic retry.':
+           item.state==='UNCERTAIN'?' — Legacy unconfirmed send; check thread before removing.':'');
         row.dataset.queueId=item.id;
         row.dataset.state=item.state;
         row.classList.toggle('queue-unconfirmed',item.state==='UNCERTAIN');
+        row.classList.toggle('queue-failed',item.state==='FAILED');
         const elapsed=formatQueueElapsed(item.created_at,queueOpenedAtSeconds);
         const attempts=Math.max(0,Number(item.attempts)||0);
-        row.querySelector('.queue-meta').textContent='('+(elapsed??'–')+'/'+attempts+')';
+        row.querySelector('.queue-meta').textContent=(item.state==='FAILED'?'FAILED ':'')+'('+(elapsed??'–')+'/'+attempts+')';
         const remove=row.querySelector('.queue-remove');
         const cancellable=['QUEUED','WAITING','BLOCKED','UNCERTAIN'].includes(item.state);
         remove.disabled=!cancellable||busy||!connected;

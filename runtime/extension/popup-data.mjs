@@ -55,7 +55,7 @@ export async function setStoredSite(chromeApi, url, enabled) {
   return {id:origin,enabled:Boolean(enabled)};
 }
 
-const priority = {UNCERTAIN:0,BLOCKED:1,SENDING:2,CHECKING:2,WAITING:3,QUEUED:4};
+const priority = {FAILED:0,UNCERTAIN:0,BLOCKED:1,SENDING:2,CHECKING:2,WAITING:3,QUEUED:4};
 function threadKey(item) {
   // Old queue adapters might not identify threads; don't merge unrelated IDs.
   return `${item.platform||'Queue'}\u0000${item.thread_id||item.id}`;
@@ -75,10 +75,11 @@ export function compactQueue(items, {expanded=false,maxHeads=8}={}) {
   const visible=expanded ? heads.flatMap(x=>x.items) : heads.slice(0,Math.max(1,maxHeads)).map(x=>x.head);
   const headFor=new Map(heads.flatMap(x=>x.items.map(item=>[item.id,x.head])));
   const behind=new Map(heads.map(x=>[x.head.id,x.count-1]));
+  const failed=all.filter(x=>x.state==='FAILED').length;
   const uncertain=all.filter(x=>x.state==='UNCERTAIN').length;
   const blocked=all.filter(x=>x.state==='BLOCKED').length;
   return {visible,total:all.length,threads:threads.size,behind,headFor,
-    hidden:all.length-visible.length,uncertain,blocked};
+    hidden:all.length-visible.length,failed,uncertain,blocked};
 }
 
 // Statuses describe what the user can do, not internal retry counters.
@@ -87,11 +88,13 @@ export function queueStatusText(item,{head=item,remaining=0}={}) {
   const state=String(item.state||'QUEUED').toUpperCase();
   const following=head.id!==item.id;
   let message;
-  if(following && ['UNCERTAIN','BLOCKED'].includes(head.state))
+  if(following && head.state==='FAILED') message='Queued to send — previous attempt failed';
+  else if(following && ['UNCERTAIN','BLOCKED'].includes(head.state))
     message=head.state==='UNCERTAIN' ? 'Waiting — previous send unconfirmed' : 'Waiting — previous message blocked';
   else if(following) message='Waiting behind earlier message';
   else message=({
-    UNCERTAIN:'Send unconfirmed — open thread to check',
+    FAILED:'Failed — Send click not confirmed; not retried',
+    UNCERTAIN:'Legacy unconfirmed send — pending migration',
     BLOCKED:'Blocked — needs attention',
     SENDING:'Sending',
     CHECKING:'Checking delivery',
@@ -99,7 +102,7 @@ export function queueStatusText(item,{head=item,remaining=0}={}) {
     QUEUED:'Queued to send',
   })[state]||state.toLowerCase();
   if(!following && remaining>0)
-    message+=' · '+remaining+' later message'+(remaining===1?'':'s')+' waiting';
+    message+=' · '+remaining+' later message'+(remaining===1?'':'s')+(state==='FAILED'?' queued':' waiting');
   return message;
 }
 

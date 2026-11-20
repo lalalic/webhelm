@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import { attachmentUploadScript } from "./attachment-upload.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import { classifyProbe, PROBE_JS, targetUrl, deliveryMessage, requiresPromptFile, enforcementContext } from "./chatgpt-probe.mjs";
-import { SEND_ENABLED_JS } from "./lifecycle-common.mjs";
 import { submissionScript } from "./submission-script.mjs";
 import { DurableQueueCore } from "../durable-queue-core.mjs";
 
@@ -13,9 +12,10 @@ const transitions = new Set([
   "CHECKING>WAITING",
   "CHECKING>SENDING",
   "CHECKING>BLOCKED",
+  "CHECKING>FAILED",
   "SENDING>SENT",
   "SENDING>WAITING",
-  "SENDING>UNCERTAIN",
+  "SENDING>FAILED",
   "UNCERTAIN>SENT",
   "UNCERTAIN>WAITING",
   "BLOCKED>WAITING",
@@ -66,13 +66,15 @@ const chatgptQueuePolicy = {
     return {ok:true,status:"queued",queue_id:id,thread_id,state:"QUEUED"};
   },
   claim(db, owner, now, leaseSeconds) {
-    db.prepare("UPDATE turns SET state='UNCERTAIN',lease_owner=NULL,lease_until=NULL WHERE state='SENDING' AND lease_until<=?").run(now);
+    // A send whose result was lost is a terminal failure, never auto-resend.
+    db.prepare("UPDATE turns SET state='FAILED',lease_owner=NULL,lease_until=NULL,receipt=COALESCE(receipt,'send_interrupted') WHERE state='SENDING' AND lease_until<=?").run(now);
+    // Retire legacy UNCERTAIN heads without retrying them.
+    db.prepare("UPDATE turns SET state='FAILED',lease_owner=NULL,lease_until=NULL,receipt=COALESCE(receipt,'legacy_send_unconfirmed') WHERE state='UNCERTAIN'").run();
     db.prepare("UPDATE turns SET state='WAITING',lease_owner=NULL,lease_until=NULL,next_check_at=? WHERE state='CHECKING' AND lease_until<=?").run(now,now);
-    // BLOCKED is a pre-send failure. Retry after cooldown so a transient
-    // login or redirect cannot permanently starve all later turns in a thread.
-    // UNCERTAIN remains excluded: that turn might already have been sent.
+    // Existing BLOCKED records from an older runtime may still need a probe;
+    // new pre-send failures are terminal FAILED and never automatically retried.
     db.prepare("UPDATE turns SET state='WAITING',lease_owner=NULL,lease_until=NULL,next_check_at=? WHERE state='BLOCKED' AND next_check_at<=?").run(now,now);
-    const row=this.one(db, `SELECT t.* FROM turns t WHERE t.state IN ('QUEUED','WAITING') AND t.next_check_at<=? AND NOT EXISTS(SELECT 1 FROM turns older WHERE older.thread_id=t.thread_id AND older.seq<t.seq AND (older.state NOT IN ('SENT','CANCELLED') OR (older.state='SENT' AND older.next_check_at>?))) ORDER BY t.seq LIMIT 1`,now,now);
+    const row=this.one(db, `SELECT t.* FROM turns t WHERE t.state IN ('QUEUED','WAITING') AND t.next_check_at<=? AND NOT EXISTS(SELECT 1 FROM turns older WHERE older.thread_id=t.thread_id AND older.seq<t.seq AND (older.state NOT IN ('SENT','FAILED','CANCELLED') OR (older.state='SENT' AND older.next_check_at>?))) ORDER BY t.seq LIMIT 1`,now,now);
     if (!row) return null;
     db.prepare("UPDATE turns SET state='CHECKING',lease_owner=?,lease_until=?,attempts=attempts+1 WHERE id=?").run(owner,now+leaseSeconds,row.id);
     return this.one(db, "SELECT * FROM turns WHERE id=?", row.id);
@@ -182,7 +184,7 @@ export class ChatGPTQueue extends DurableQueueCore {
       if (["CHECKING", "SENDING"].includes(source) && row.lease_until <= now) {
         throw new Error("expired lease");
       }
-      const release = ["WAITING", "SENT", "UNCERTAIN", "BLOCKED"].includes(
+      const release = ["WAITING", "SENT", "FAILED", "UNCERTAIN", "BLOCKED"].includes(
         target,
       );
       this.db.prepare(
@@ -235,9 +237,7 @@ export class ChatGPTQueue extends DurableQueueCore {
       const source =
         `return await (async()=>{ const page=await page_info(); const state=await js(${
           JSON.stringify(PROBE_JS)
-        }); if(state?.state==='READY' && !(await js(${
-          JSON.stringify(SEND_ENABLED_JS)
-        }))) state.state='NOT_READY'; return {url:page.url||'',state}; })()`;
+        }); return {url:page.url||'',state}; })()`;
       const result = await this._exec(sid, source);
       state = classifyProbe(result.url, url, result.state);
       if (["READY", "RUNNING", "BLOCKED"].includes(state)) return state;
@@ -296,62 +296,35 @@ export class ChatGPTQueue extends DurableQueueCore {
     const owner = item.lease_owner;
     try {
       const state = await this._probe(item);
-      if (state === "RUNNING") {
-        this.transition(item.id, owner, "CHECKING", "WAITING", {
-          delay: this.intervalMs / 1000,
-          receipt: "stop_visible",
-        });
-        return;
-      }
-      if (state === "BLOCKED") {
-        // Recheck pre-send failures with bounded exponential backoff (1m..1h).
-        const delay = Math.min(3600, 60 * (2 ** Math.min(6, Math.max(0, item.attempts - 1))));
-        this.transition(item.id, owner, "CHECKING", "BLOCKED", {
-          receipt: "page blocked", delay,
-        });
-        this.logger({event: "page_blocked", queue_id: item.id, attempts: item.attempts, retry_in_seconds: delay});
-        return;
-      }
       if (state !== "READY") {
-        this.transition(item.id, owner, "CHECKING", "WAITING", {
-          delay: this.intervalMs / 1000,
-          receipt: `probe_${state.toLowerCase()}`,
+        // The Send button did not become available before probe deadline, or
+        // thread/login validation failed. Fail once and let FIFO progress.
+        this.transition(item.id, owner, "CHECKING", "FAILED", {
+          delay: 0, receipt: `send_not_ready_${state.toLowerCase()}`,
         });
         return;
       }
       this.transition(item.id, owner, "CHECKING", "SENDING");
       const receipt = await this._send(item);
-      // These diagnostics are all returned before clicking Send. A safe retry
-      // must not block this thread forever as an ambiguous delivery.
-      if (["pre_send_gate_not_ready", "send_control_not_found", "thread_redirect_mismatch"]
-          .includes(receipt?.diagnostic)) {
-        this.transition(item.id, owner, "SENDING", "WAITING", {
-          delay: this.intervalMs / 1000,
-          receipt: receipt.diagnostic,
-        });
-      } else if (receipt?.verified_by === "stop-button-visible") {
-        // Post-click Stop confirms the reply started; no fixed 60s gap is needed.
-        // The next turn is re-probed; RUNNING still blocks overlapping sends.
+      if (receipt?.verified_by === "send-clicked") {
         this.transition(item.id, owner, "SENDING", "SENT", {
           delay: 0, receipt: receipt.verified_by,
         });
       } else {
-        // After any unverified click, keep UNCERTAIN until a read-only check
-        // proves that the turn is present or absent; never send twice blindly.
-        this.transition(item.id, owner, "SENDING", "UNCERTAIN", {
-          receipt: receipt?.diagnostic || "missing_user_turn_receipt",
+        this.transition(item.id, owner, "SENDING", "FAILED", {
+          delay: 0, receipt: receipt?.diagnostic || "send_click_not_confirmed",
         });
       }
     } catch (e) {
       const diagnostic = this._safeDiagnostic(e),
         current = this._one("SELECT * FROM turns WHERE id=?", item.id);
       if (current?.state === "SENDING") {
-        this.transition(item.id, owner, "SENDING", "UNCERTAIN", {
+        this.transition(item.id, owner, "SENDING", "FAILED", {
           receipt: diagnostic,
         });
       } else if (current?.state === "CHECKING") {
-        this.transition(item.id, owner, "CHECKING", "WAITING", {
-          delay: this.intervalMs / 1000,
+        this.transition(item.id, owner, "CHECKING", "FAILED", {
+          delay: 0,
           receipt: `probe_error_${diagnostic}`,
         });
       }

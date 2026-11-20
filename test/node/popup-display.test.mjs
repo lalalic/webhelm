@@ -72,7 +72,7 @@ test('same-thread unconfirmed send is one thread with a blocked follow-up, not i
   assert.equal(folded.threads,1);
   assert.deepEqual(folded.visible.map(x=>x.id),['first']);
   assert.equal(queueStatusText(rows[0],{remaining:folded.behind.get('first')}),
-    'Send unconfirmed — open thread to check · 1 later message waiting');
+    'Legacy unconfirmed send — pending migration · 1 later message waiting');
   const full=compactQueue(rows,{expanded:true});
   assert.deepEqual(full.visible.map(x=>x.id),['first','second']);
   assert.equal(full.headFor.get('second'),rows[0]);
@@ -113,4 +113,18 @@ test('legacy running worker menu respects persisted hidden groups',async()=>{
   assert.deepEqual(result.map(w=>w.name),['Relay','WebHelm']);
   assert.equal(workspaces.length,3,'read operation must not modify daemon session list');
   assert.deepEqual(menuWorkspaces([{name:'WeChat',showInMenu:false}],{}),[]);
+});
+
+
+test('FAILED is terminal and does not imply that a later queued turn is blocked',()=>{
+  const items=[
+    {id:'failed',thread_id:'same',platform:'ChatGPT',state:'FAILED'},
+    {id:'next',thread_id:'same',platform:'ChatGPT',state:'QUEUED'},
+  ];
+  const queue=compactQueue(items,{expanded:true});
+  assert.equal(queue.failed,1);
+  assert.equal(queueStatusText(items[0],{remaining:1}),
+    'Failed — Send click not confirmed; not retried · 1 later message queued');
+  assert.equal(queueStatusText(items[1],{head:items[0]}),
+    'Queued to send — previous attempt failed');
 });

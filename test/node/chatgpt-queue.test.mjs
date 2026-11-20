@@ -120,45 +120,18 @@ test("per-thread FIFO, independent heads and mergeable request keys", async (t) 
   );
 });
 
-test("crash recovery retries CHECKING but marks expired SENDING uncertain and never resends", async (t) => {
-  const { q, root } = fixture(100);
-  t.after(async () => {
-    await q.shutdown();
-    rmSync(root, { recursive: true, force: true });
-  });
-  const one =
-    q.enqueue({ thread_id: "T", message: "one", idempotency_key: "one" })
-      .queue_id;
-  const two =
-    q.enqueue({ thread_id: "T", message: "two", idempotency_key: "two" })
-      .queue_id;
-  q.claim("worker", 100);
-  q.transition(one, "worker", "CHECKING", "SENDING", { now: 101 });
-  const restart = new ChatGPTQueue({
-    persistenceRoot: root,
-    startSession: async () => ({ session_id: "mock" }),
-    execSession: async () => ({}),
-    stopSession: async () => {},
-    now: () => 300,
-    leaseSeconds: 10,
-  });
-  t.after(async () => restart.shutdown());
-  assert.equal(restart.claim("new", 300), null);
-  assert.equal(restart.rows()[0].state, "UNCERTAIN");
-  assert.throws(
-    () =>
-      restart.transition(one, "reconciler", "UNCERTAIN", "WAITING", {
-        receipt: "",
-      }),
-    /reconciliation evidence/,
-  );
-  restart.reconcile({
-    queue_id: one,
-    evidence: "read-only: user turn absent after checking conversation",
-    accepted: false,
-  });
-  assert.equal(restart.claim("new", 300).id, one);
-  assert.equal(restart.rows().find((r) => r.id === two).state, "QUEUED");
+test("expired SENDING is FAILED without resend and successor can proceed",async t=>{
+ const {q,root}=fixture(100);
+ t.after(async()=>{await q.shutdown();rmSync(root,{recursive:true,force:true})});
+ const first=q.enqueue({thread_id:"T",message:"one",idempotency_key:"one"}).queue_id;
+ const second=q.enqueue({thread_id:"T",message:"two",idempotency_key:"two"}).queue_id;
+ q.claim("old",100);
+ q.transition(first,"old","CHECKING","SENDING",{now:101});
+ const restart=new ChatGPTQueue({persistenceRoot:root,startSession:async()=>({session_id:"mock"}),execSession:async()=>({}),stopSession:async()=>{},now:()=>300,leaseSeconds:10});
+ t.after(async()=>restart.shutdown());
+ assert.equal(restart.claim("new",300).id,second);
+ assert.equal(restart.rows().find(r=>r.id===first).state,"FAILED");
+ assert.equal(restart.rows().find(r=>r.id===first).receipt,"send_interrupted");
 });
 
 test("expired CHECKING lease recovers to WAITING for a fresh probe", async (t) => {
@@ -201,38 +174,28 @@ test("queue description supplies a short title and safe thread URL without paylo
   assert.ok(title.endsWith('…'));
 });
 
-test("remove permits non-running WAITING, BLOCKED and UNCERTAIN, but never SENDING", async (t) => {
-  const {q,root}=fixture();
-  t.after(async()=>{await q.shutdown();rmSync(root,{recursive:true,force:true});});
-  const waiting=q.enqueue({thread_id:'waiting',message:'a',idempotency_key:'wait'}).queue_id;
-  q.claim('worker');
-  q.transition(waiting,'worker','CHECKING','WAITING',{receipt:'page busy'});
-  assert.equal(q.cancel(waiting).state,'CANCELLED');
-  const blocked=q.enqueue({thread_id:'blocked',message:'b',idempotency_key:'blocked'}).queue_id;
-  q.claim('worker2');
-  q.transition(blocked,'worker2','CHECKING','BLOCKED',{receipt:'page blocked'});
-  assert.equal(q.cancel(blocked).state,'CANCELLED');
-  const sending=q.enqueue({thread_id:'sending',message:'c',idempotency_key:'sending'}).queue_id;
-  q.claim('worker3');
-  q.transition(sending,'worker3','CHECKING','SENDING');
-  assert.equal(q.cancel(sending).ok,false);
-  q.transition(sending,'worker3','SENDING','UNCERTAIN',{receipt:'unknown'});
-  assert.equal(q.cancel(sending).ok,true);
+test("active sends and FAILED terminal items cannot be cancelled",async t=>{
+ const {q,root}=fixture();
+ t.after(async()=>{await q.shutdown();rmSync(root,{recursive:true,force:true})});
+ const id=q.enqueue({thread_id:'sending',message:'message',idempotency_key:'one'}).queue_id;
+ q.claim('w');
+ q.transition(id,'w','CHECKING','SENDING');
+ assert.equal(q.cancel(id).ok,false);
+ q.transition(id,'w','SENDING','FAILED',{receipt:'click_failed'});
+ assert.equal(q.cancel(id).ok,false);
+ assert.equal(q.rows()[0].state,'FAILED');
 });
 
-test("UNCERTAIN is removable without resending or erasing idempotency evidence", async (t) => {
-  const {q,root}=fixture();
-  t.after(async()=>{await q.shutdown();rmSync(root,{recursive:true,force:true});});
-  const id=q.enqueue({thread_id:'uncertain',message:'maybe sent',idempotency_key:'known'}).queue_id;
-  q.claim('sender');
-  q.transition(id,'sender','CHECKING','SENDING');
-  assert.equal(q.cancel(id).ok,false);
-  q.transition(id,'sender','SENDING','UNCERTAIN',{receipt:'could have been sent'});
-  assert.deepEqual(q.cancel(id),{ok:true,queue_id:id,state:'CANCELLED'});
-  assert.equal(q.rows().find(row=>row.id===id).receipt,'could have been sent');
-  assert.equal(q.list().items.some(row=>row.id===id),false);
-  assert.equal(q.enqueue({thread_id:'uncertain',message:'maybe sent',idempotency_key:'known'}).queue_id,id);
-  assert.equal(q.claim('later'),null);
+test("legacy UNCERTAIN migrates to FAILED and unblocks FIFO without resend",async t=>{
+ const {q,root}=fixture();
+ t.after(async()=>{await q.shutdown();rmSync(root,{recursive:true,force:true})});
+ const first=q.enqueue({thread_id:'same',message:'maybe sent',idempotency_key:'known'}).queue_id;
+ const second=q.enqueue({thread_id:'same',message:'next',idempotency_key:'next'}).queue_id;
+ // Simulate a record persisted by the previous deployed queue.
+ q.db.prepare("UPDATE turns SET state='UNCERTAIN',receipt='old failed probe' WHERE id=?").run(first);
+ assert.equal(q.claim('new').id,second);
+ assert.equal(q.rows().find(r=>r.id===first).state,'FAILED');
+ assert.equal(q.enqueue({thread_id:'same',message:'maybe sent',idempotency_key:'known'}).queue_id,first);
 });
 
 test("WAITING work is not eligible for enqueue-time merge", async (t) => {
@@ -290,7 +253,7 @@ test("dispatcher uses one private session and accepts only a verified send recei
         };
       }
       sends++;
-      return { ok: true, value: { verified_by: "stop-button-visible" } };
+      return { ok: true, value: { verified_by: "send-clicked" } };
     },
     stopSession: async () => {
       stops++;
@@ -317,42 +280,22 @@ test("dispatcher uses one private session and accepts only a verified send recei
   assert.equal(sends, 1);
 });
 
-test("uncertain send receipt blocks successors and never retries the submitted item", async (t) => {
-  const root = mkdtempSync(join(tmpdir(), "chatgpt-uncertain-"));
-  let executions = 0;
-  const q = new ChatGPTQueue({
-    persistenceRoot: root,
-    intervalMs: 10,
-    startSession: async () => ({ session_id: "private" }),
-    execSession: async () => {
-      executions++;
-      return {
-        ok: true,
-        value: executions === 1
-          ? {
-            url: "https://chatgpt.com/c/t",
-            state: { state: "READY", composer_text: "first" },
-          }
-          : { diagnostic: "post_submit_send_state_unverified" },
-      };
-    },
-    stopSession: async () => {},
-  });
-  t.after(async () => {
-    await q.shutdown();
-    rmSync(root, { recursive: true, force: true });
-  });
-  q.enqueue({ thread_id: "t", message: "first", idempotency_key: "first" });
-  q.enqueue({ thread_id: "t", message: "second", idempotency_key: "second" });
-  q.start();
-  const until = Date.now() + 2000;
-  while (Date.now() < until && q.rows()[0].state !== "UNCERTAIN") {
-    await new Promise((r) => setTimeout(r, 5));
-  }
-  await new Promise((r) => setTimeout(r, 30));
-  assert.equal(q.rows()[0].state, "UNCERTAIN");
-  assert.equal(q.rows()[1].state, "QUEUED");
-  assert.equal(executions, 2);
+test("failed click receipt releases the next queued turn without retry",async t=>{
+ const {q,root}=fixture();
+ t.after(async()=>{await q.shutdown();rmSync(root,{recursive:true,force:true})});
+ const first=q.enqueue({thread_id:'same',message:'one',idempotency_key:'one'}).queue_id;
+ const second=q.enqueue({thread_id:'same',message:'two',idempotency_key:'two'}).queue_id;
+ const sent=[];
+ q._probe=async()=>'READY';
+ q._send=async item=>{
+   sent.push(item.id);
+   return item.id===first?{diagnostic:'send_click_not_confirmed'}:{verified_by:'send-clicked'};
+ };
+ await q.process(q.claim('first'));
+ assert.equal(q.rows().find(r=>r.id===first).state,'FAILED');
+ await q.process(q.claim('second'));
+ assert.equal(q.rows().find(r=>r.id===second).state,'SENT');
+ assert.deepEqual(sent,[first,second]);
 });
 
 test("attachment turns persist paths across queue restart and cannot merge or change identity", async t => {
@@ -385,7 +328,7 @@ test("attachment worker uploads binary files before clicking Send", async t => {
   q.sessions.set("item-one", "owned-session");
   q._exec = async (_sid, source) => {
     calls.push(source);
-    return calls.length === 1 ? {ready:true} : {verified_by:"stop-button-visible"};
+    return calls.length === 1 ? {ready:true} : {verified_by:"send-clicked"};
   };
   await q._send({id:"item-one", thread_id:"thread123456", project_id:null,
     message:"Review this", files_json:JSON.stringify([doc])});
@@ -420,13 +363,13 @@ test("long newTurn sends prompt.md via existing file upload, keeps short ?prompt
       return {ready:true};
     }
     assert.equal(calls,2);
-    assert.ok(script.includes(deliveryMessage(original)),"submits the short prompt referring to attachment");
+    assert.ok(script.includes("await click(selector)"),"clicks Send after attachment upload");
     assert.ok(!script.includes(original),"does not put the original long prompt into browser submission script");
     assert.ok(existsSync(uploadedFile),"local file exists until upload finishes");
-    return {verified_by:"stop-button-visible"};
+    return {verified_by:"send-clicked"};
   };
   const result=await q._send(q.rows()[0]);
-  assert.equal(result.verified_by,"stop-button-visible");
+  assert.equal(result.verified_by,"send-clicked");
   assert.equal(calls,2);
   assert.equal(existsSync(uploadedDir),false,"temporary directory is removed after newTurn");
   assert.equal(q.rows()[0].message,original,"durable queue keeps original prompt");
@@ -473,7 +416,7 @@ test("ordinary new-turn URL redirects to Project thread without blocking queue",
     {state:"READY",composer_text:"a b"}),"READY");
 
   assert.equal(classifyProbe(url, url, {state:"READY",composer_text:"wrong draft"}),
-    "NOT_READY", "never send an unrelated composer draft");
+    "READY", "ignore the composer draft and trust enabled Send only");
   assert.equal(classifyProbe("https://chatgpt.com/c/different", url, state), "BLOCKED");
 });
 
@@ -499,127 +442,83 @@ test("browser upload helper waits per file before selecting next and handles dup
 });
 
 
-test("blocked pre-send turns retry after cooldown and preserve same-thread FIFO", async (t) => {
-  let clock = 100;
-  const { q, root } = fixture(() => clock);
-  t.after(async () => { await q.shutdown(); rmSync(root, {recursive: true, force: true}); });
-  const first = q.enqueue({thread_id: "owner", message: "first", idempotency_key: "first"}).queue_id;
-  const second = q.enqueue({thread_id: "owner", message: "second", idempotency_key: "second"}).queue_id;
-  const independent = q.enqueue({thread_id: "other", message: "other", idempotency_key: "other"}).queue_id;
-  q._probe = async () => "BLOCKED";
-  await q.process(q.claim("worker", clock));
-  assert.equal(q.rows().find(row => row.id === first).state, "BLOCKED");
-  assert.equal(q.rows().find(row => row.id === first).next_check_at, 160);
-  assert.equal(q.claim("independent", clock).id, independent);
-  q.transition(independent, "independent", "CHECKING", "SENDING");
-  q.transition(independent, "independent", "SENDING", "SENT", {delay: 0, receipt: "sent"});
-  assert.equal(q.claim("early", 159), null);
-  clock = 160;
-  const retry = q.claim("retry", clock);
-  assert.equal(retry.id, first);
-  assert.equal(retry.attempts, 2);
-  assert.equal(q.rows().find(row => row.id === second).state, "QUEUED");
-  await q.process(retry);
-  assert.equal(q.rows().find(row => row.id === first).next_check_at, 280);
-  assert.equal(q.claim("early-again", 279), null);
-  assert.equal(q.claim("ready", 280).id, first);
+test("blocked pre-send becomes FAILED, preserving next-turn FIFO",async t=>{
+ const {q,root}=fixture();
+ t.after(async()=>{await q.shutdown();rmSync(root,{recursive:true,force:true})});
+ const first=q.enqueue({thread_id:'same',message:'first',idempotency_key:'first'}).queue_id;
+ const second=q.enqueue({thread_id:'same',message:'second',idempotency_key:'second'}).queue_id;
+ q._probe=async item=>item.id===first?'BLOCKED':'READY';
+ q._send=async()=>({verified_by:'send-clicked'});
+ await q.process(q.claim('one'));
+ assert.equal(q.rows().find(r=>r.id===first).state,'FAILED');
+ await q.process(q.claim('two'));
+ assert.equal(q.rows().find(r=>r.id===second).state,'SENT');
 });
 
-test("old blocked records resume after restart without resending an uncertain turn", async (t) => {
-  const {q, root} = fixture(100);
-  t.after(async () => { await q.shutdown(); rmSync(root, {recursive: true, force: true}); });
-  const id = q.enqueue({thread_id: "A", message: "old", idempotency_key: "old"}).queue_id;
-  q.claim("worker", 100);
-  q.transition(id, "worker", "CHECKING", "BLOCKED", {now: 100, delay: 0, receipt: "page blocked"});
-  const reopen = new ChatGPTQueue({
-    persistenceRoot: root, startSession: async () => ({session_id: "mock"}),
-    execSession: async () => ({}), stopSession: async () => {}, now: () => 200,
-  });
-  t.after(async () => reopen.shutdown());
-  assert.equal(reopen.claim("new", 200).id, id);
-  reopen.transition(id, "new", "CHECKING", "SENDING", {now: 200});
-  reopen.transition(id, "new", "SENDING", "UNCERTAIN", {now: 200, receipt: "ambiguous"});
-  assert.equal(reopen.claim("safe", 10000), null);
+test("legacy BLOCKED head can recover, then failed send remains terminal",async t=>{
+ const {q,root}=fixture(100);
+ t.after(async()=>{await q.shutdown();rmSync(root,{recursive:true,force:true})});
+ const first=q.enqueue({thread_id:'A',message:'old',idempotency_key:'old'}).queue_id;
+ const second=q.enqueue({thread_id:'A',message:'next',idempotency_key:'next'}).queue_id;
+ q.claim('w',100);
+ q.transition(first,'w','CHECKING','BLOCKED',{now:100,delay:0,receipt:'page blocked'});
+ const restart=new ChatGPTQueue({persistenceRoot:root,startSession:async()=>({session_id:'mock'}),execSession:async()=>({}),stopSession:async()=>{},now:()=>200});
+ t.after(async()=>restart.shutdown());
+ assert.equal(restart.claim('new',200).id,first);
+ restart.transition(first,'new','CHECKING','SENDING',{now:200});
+ restart.transition(first,'new','SENDING','FAILED',{now:200,receipt:'click_failed'});
+ assert.equal(restart.claim('next',200).id,second);
 });
 
-
-test("probe preserves ProseMirror paragraph boundaries before comparing prefilled text", async () => {
-  const {PROBE_JS, classifyProbe, targetUrl} = await import("../../runtime/chatgpt/chatgpt-probe.mjs");
-  const {runInNewContext} = await import("node:vm");
-  const lines = ["Gateway event", "metadata: important", "", "check JEL", "", "report result"];
-  const composer = {
-    children: lines.map(textContent => ({tagName: "P", textContent})),
-    textContent: lines.join(""),
-    getAttribute: key => key === "contenteditable" ? "true" : null,
-    getClientRects: () => [{}],
-  };
-  const state = runInNewContext(PROBE_JS, {
-    document: {
-      body: {innerText: "Open ChatGPT"},
-      querySelector: () => composer,
-      querySelectorAll: () => [composer],
-    },
-    getComputedStyle: () => ({visibility: "visible"}),
-  });
-  assert.equal(state.state, "READY");
-  assert.equal(state.composer_text, lines.join("\n"));
-  const url = targetUrl(null, "thread", lines.join("\n"));
-  assert.equal(classifyProbe(url, url, state), "READY");
-  assert.equal(classifyProbe(url, url, {...state, composer_text: lines.join("")}), "NOT_READY");
+test("probe ignores composer content and uses enabled Send only",async()=>{
+ const {PROBE_JS,classifyProbe,targetUrl}=await import('../../runtime/chatgpt/chatgpt-probe.mjs');
+ const {runInNewContext}=await import('node:vm');
+ const visible={getClientRects:()=>[{}],disabled:false,getAttribute:()=>null};
+ const state=runInNewContext(PROBE_JS,{document:{
+   body:{innerText:'Open ChatGPT'},
+   querySelectorAll:()=>[visible],
+ },getComputedStyle:()=>({visibility:'visible'})});
+ assert.equal(state.state,'READY');
+ assert.equal('composer_text' in state,false);
+ const url=targetUrl(null,'thread','the actual prompt');
+ assert.equal(classifyProbe(url,url,state),'READY');
+ assert.equal(classifyProbe(url,url,{...state,composer_text:'completely different'}),'READY');
 });
 
-
-test("prefill probe ignores hidden composer and hidden Send controls", async () => {
-  const {PROBE_JS,classifyProbe,targetUrl} = await import("../../runtime/chatgpt/chatgpt-probe.mjs");
-  const {SEND_ENABLED_JS} = await import("../../runtime/chatgpt/lifecycle-common.mjs");
-  const {runInNewContext} = await import("node:vm");
-  const hidden = {
-    children: [{tagName: 'P', textContent:'stale'}], textContent:'stale',
-    getAttribute:()=> 'true', getClientRects:()=>[],
-  };
-  const current = {
-    children: [{tagName:'P',textContent:'Current'}, {tagName:'P',textContent:'owner reply'}],
-    textContent:'Currentowner reply',getAttribute:k=>k==='contenteditable'?'true':null,
-    getClientRects:()=>[{}],
-  };
-  const hiddenButton = {getClientRects:()=>[],disabled:false,getAttribute:()=>null};
-  const visibleButton = {getClientRects:()=>[{}],disabled:false,getAttribute:()=>null};
-  const document = {
-    body:{innerText:'ChatGPT'},
-    querySelectorAll:selector => selector==='button' ? [] : selector.includes('button')
-      ? [hiddenButton, visibleButton] : [hidden, current],
-  };
-  const context = {document,getComputedStyle:()=>({visibility:'visible'})};
-  const state=runInNewContext(PROBE_JS,context);
-  assert.equal(state.state,'READY');
-  assert.equal(state.composer_text,'Current\nowner reply');
-  assert.equal(runInNewContext(SEND_ENABLED_JS,context),true);
-  const url=targetUrl(null,'thread','Current\nowner reply');
-  assert.equal(classifyProbe(url,url,state),'READY');
+test("probe rejects disabled/hidden Send controls without reading any composer",async()=>{
+ const {PROBE_JS,classifyProbe,targetUrl}=await import('../../runtime/chatgpt/chatgpt-probe.mjs');
+ const {runInNewContext}=await import('node:vm');
+ const hidden={getClientRects:()=>[],disabled:false,getAttribute:()=>null};
+ const disabled={getClientRects:()=>[{}],disabled:true,getAttribute:()=>null};
+ const active={getClientRects:()=>[{}],disabled:false,getAttribute:()=>null};
+ let buttons=[hidden,disabled];
+ const context={document:{body:{innerText:'ChatGPT'},querySelectorAll:()=>buttons}};
+ const probe=()=>runInNewContext(PROBE_JS,context);
+ assert.equal(probe().state,'NOT_READY');
+ buttons=[hidden,disabled,active];
+ assert.equal(probe().state,'READY');
+ const url=targetUrl(null,'thread','expected');
+ assert.equal(classifyProbe(url,url,probe()),'READY');
 });
 
-
-test("pre-click Send diagnostics retry safely instead of blocking the thread UNCERTAIN", async (t) => {
-  for (const diagnostic of ["pre_send_gate_not_ready", "send_control_not_found", "thread_redirect_mismatch"]) {
-    const {q, root} = fixture(100);
-    t.after(async () => { await q.shutdown(); rmSync(root, {recursive:true,force:true}); });
-    q._probe = async () => "READY";
-    q._send = async () => ({diagnostic});
-    const id = q.enqueue({thread_id:"t", message:"hi", idempotency_key:`k-${diagnostic}`}).queue_id;
-    await q.process(q.claim("worker"));
-    const row = q.rows().find(r => r.id === id);
-    assert.equal(row.state, "WAITING", diagnostic);
-    assert.equal(row.receipt, diagnostic);
-    assert.equal(row.attempts, 1);
-  }
+test("pre-click Send failures terminate FAILED and preserve diagnostics",async t=>{
+ for(const diagnostic of ['pre_send_gate_not_ready','send_control_not_found','thread_redirect_mismatch']){
+   const {q,root}=fixture();
+   t.after(async()=>{await q.shutdown();rmSync(root,{recursive:true,force:true})});
+   q._probe=async()=>'READY';
+   q._send=async()=>({diagnostic});
+   const id=q.enqueue({thread_id:'t',message:'hi',idempotency_key:'k-'+diagnostic}).queue_id;
+   await q.process(q.claim('worker'));
+   assert.equal(q.rows().find(r=>r.id===id).state,'FAILED');
+   assert.equal(q.rows().find(r=>r.id===id).receipt,diagnostic);
+ }
 });
-
 
 test("sequential queued messages do not inherit a fixed 60s delay", async (t) => {
   const {q,root}=fixture(100);
   t.after(async()=>{await q.shutdown();rmSync(root,{recursive:true,force:true});});
   q._probe=async()=>"READY";
-  q._send=async()=>({verified_by:"stop-button-visible"});
+  q._send=async()=>({verified_by:"send-clicked"});
   const first=q.enqueue({thread_id:"t",message:"hi",idempotency_key:"first"}).queue_id;
   const next=q.enqueue({thread_id:"t",message:"good day",idempotency_key:"next"}).queue_id;
   await q.process(q.claim("worker1"));
@@ -628,17 +527,16 @@ test("sequential queued messages do not inherit a fixed 60s delay", async (t) =>
   assert.equal(q.claim("worker2").id,next);
 });
 
-test("following messages wait while ChatGPT is still generating",async(t)=>{
-  const {q,root}=fixture(100);
-  t.after(async()=>{await q.shutdown();rmSync(root,{recursive:true,force:true});});
-  q._probe=async()=>"RUNNING";
-  const id=q.enqueue({thread_id:"t",message:"new message",idempotency_key:"k-running"}).queue_id;
-  await q.process(q.claim("worker"));
-  const row=q.rows().find(r=>r.id===id);
-  assert.equal(row.state,"WAITING");
-  assert.equal(row.next_check_at,110);
+test("Send not ready after probe timeout fails rather than indefinitely blocking",async t=>{
+ const {q,root}=fixture();
+ t.after(async()=>{await q.shutdown();rmSync(root,{recursive:true,force:true})});
+ q._probe=async()=>'NOT_READY';
+ const id=q.enqueue({thread_id:'t',message:'new message',idempotency_key:'not-ready'}).queue_id;
+ await q.process(q.claim('worker'));
+ const row=q.rows().find(r=>r.id===id);
+ assert.equal(row.state,'FAILED');
+ assert.equal(row.receipt,'send_not_ready_not_ready');
 });
-
 
 test("durable queued Turn persists optional enforcement_context and sends context with long prompt.md",async t=>{
   const {readFileSync}=await import('node:fs');
@@ -664,11 +562,11 @@ test("durable queued Turn persists optional enforcement_context and sends contex
       assert.equal(readFileSync(files.at(-1),'utf8'),original);
       return {ready:true};
     }
-    assert.ok(source.includes(JSON.stringify(expected.replace(/\s+/g,' ').trim())),'submits the bounded enforcement context');
+    assert.ok(source.includes('await click(selector)'),'clicks Send after upload');
     assert.ok(!source.includes('x'.repeat(300)),'does not echo the full user task');
-    return {verified_by:'user-turn'};
+    return {verified_by:'send-clicked'};
   };
-  assert.equal((await q._send(q.rows()[0])).verified_by,'user-turn');
+  assert.equal((await q._send(q.rows()[0])).verified_by,'send-clicked');
   assert.equal(calls,2);
 });
 
@@ -719,4 +617,46 @@ test('mergeable queued Turns never combine distinct enforcement contexts',async 
   assert.throws(()=>q.enqueue({thread_id:'one',message:'bad',enforcement_context:'x'.repeat(1501),idempotency_key:'bad'}),/enforcement_context/);
   const empty=q.enqueue({thread_id:'new',message:'ok',enforcement_context:null,idempotency_key:'null'});
   assert.equal(q.rows().find(x=>x.id===empty.queue_id).enforcement_context,'');
+});
+
+test("actual queue probe executes with Send readiness and never reads composer text", async t => {
+  const {runInNewContext}=await import('node:vm');
+  const {targetUrl}=await import('../../runtime/chatgpt/chatgpt-probe.mjs');
+  const {q,root}=fixture();
+  t.after(async()=>{await q.shutdown();rmSync(root,{recursive:true,force:true})});
+  const message='private input not inspected';
+  const url=targetUrl(null,'target-thread',message);
+  const button={getClientRects:()=>[{}],disabled:false,getAttribute:()=>null};
+  const document={body:{innerText:'Open ChatGPT'},querySelectorAll:()=>[button]};
+  const AsyncFunction=Object.getPrototypeOf(async function(){}).constructor;
+  let calls=0;
+  q._exec=async(_session,source)=>{
+    calls++;
+    return new AsyncFunction('page_info','js',source)(
+      async()=>({url}),
+      async probe=>runInNewContext(probe,{document}),
+    );
+  };
+  const state=await q._probe({id:'only-once',project_id:null,thread_id:'target-thread',message});
+  assert.equal(state,'READY');
+  assert.equal(calls,1);
+});
+
+test("browser click transport exception fails once and allows the next same-thread turn",async t=>{
+ const {q,root}=fixture();
+ t.after(async()=>{await q.shutdown();rmSync(root,{recursive:true,force:true})});
+ const first=q.enqueue({thread_id:'same',message:'first',idempotency_key:'first'}).queue_id;
+ const second=q.enqueue({thread_id:'same',message:'second',idempotency_key:'second'}).queue_id;
+ q._probe=async()=>'READY';
+ const sends=[];
+ q._send=async item=>{
+   sends.push(item.id);
+   if(item.id===first)throw Error('simulated browser click failure');
+   return {verified_by:'send-clicked'};
+ };
+ await q.process(q.claim('w1'));
+ assert.equal(q.rows().find(x=>x.id===first).state,'FAILED');
+ await q.process(q.claim('w2'));
+ assert.equal(q.rows().find(x=>x.id===second).state,'SENT');
+ assert.deepEqual(sends,[first,second]);
 });

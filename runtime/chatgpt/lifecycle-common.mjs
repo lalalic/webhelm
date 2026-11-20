@@ -1,8 +1,8 @@
 import { waitUntilStable } from "./readiness.mjs";
 export const SEND_ENABLED_JS =
-  `(() => { const buttons=[...document.querySelectorAll('button[data-testid="send-button"],button[aria-label="Send prompt"],button[aria-label="Send"],form button[type="submit"]')]; const b=buttons.find(e=>e.getClientRects().length>0); return !!b && !b.disabled && b.getAttribute('aria-disabled') !== 'true'; })()`;
-// Only post-click Stop visibility acknowledges queue submission.
-// The same selector family is used to detect ongoing generation before a send.
+  `(() => { const buttons=[...document.querySelectorAll('button[data-testid="send-button"],button[aria-label="Send prompt"],button[aria-label="Send"],form button[type="submit"]')]; return buttons.some(b=>b.getClientRects().length>0 && !b.disabled && b.getAttribute('aria-disabled') !== 'true'); })()`;
+// Readiness is determined by the enabled Send button. A successful click
+// acknowledges submission, without waiting for a Stop or text receipt.
 export const STOP_VISIBLE_JS = `(() => {
   const visible = b => !!b?.getClientRects().length && getComputedStyle(b).visibility !== 'hidden';
   return [...document.querySelectorAll('button')].some(b => {
