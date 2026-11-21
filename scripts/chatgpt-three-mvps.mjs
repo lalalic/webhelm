@@ -163,8 +163,9 @@ try {
     states:[a.state,b.state],receipts:[a.receipt,b.receipt],
     ordered_seq:[a.seq,b.seq],isolated_harness:isolatedManual};
   record('MVP3_PASS',evidence.mvp3);
-  // Let any returned-to-idle queue Session disappear before claiming cleanup.
-  for(let i=0;i<10;i++) {
+  // A queue receipt can persist before its browser Session has fully returned to idle.
+  // Allow the daemon's awaited cleanup to finish without touching unrelated Sessions.
+  for(let i=0;i<45;i++) {
     const remaining=(await sessions()).filter(x=>!existing.has(x.session_id));
     if(!remaining.length) break;
     await sleep(1000);
