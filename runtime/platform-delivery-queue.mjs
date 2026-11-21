@@ -55,7 +55,7 @@ const dbPolicy = {
     }
     const meta = display(this.definition, config);
     const tail = db.prepare('SELECT * FROM items WHERE group_key=? ORDER BY seq DESC LIMIT 1').get(meta.group);
-    if (tail && config.mergeable === true && ['QUEUED','WAITING'].includes(tail.state) &&
+    if (tail && config.mergeable === true && tail.state === 'QUEUED' &&
         tail.lease_owner === null && typeof this.definition.merge === 'function') {
       const previous = JSON.parse(tail.payload_json);
       if (previous.mergeable === true) {
@@ -81,26 +81,32 @@ const dbPolicy = {
     return {ok:true,status:'queued',queue_id:id,state:'QUEUED',group:meta.group};
   },
   claim(db, owner, now, leaseSeconds) {
-    db.prepare("UPDATE items SET state='FAILED',lease_owner=NULL,lease_until=NULL,receipt=COALESCE(receipt,'send_interrupted') WHERE state='SENDING' AND lease_until<=?").run(now);
-    db.prepare("UPDATE items SET state='WAITING',lease_owner=NULL,lease_until=NULL,next_check_at=? WHERE state='CHECKING' AND lease_until<=?").run(now,now);
-    const row = db.prepare(`SELECT item.* FROM items item WHERE item.state IN ('QUEUED','WAITING') AND item.next_check_at<=?
+    const retries=this.definition.retries??1;
+    // Expired sending leases have already counted as an attempt. Never exceed the policy budget.
+    db.prepare(`UPDATE items SET state=CASE WHEN attempts<=? THEN 'QUEUED' ELSE 'FAILED' END,
+      lease_owner=NULL,lease_until=NULL,next_check_at=?,receipt=COALESCE(receipt,'send_interrupted')
+      WHERE state='SENDING' AND lease_until<=?`).run(retries,now+(this.definition.intervalMs??10000)/1000,now);
+    // Expired read-only checks count as failures but cannot have clicked Send.
+    db.prepare(`UPDATE items SET state=CASE WHEN attempts<? THEN 'QUEUED' ELSE 'FAILED' END,
+      attempts=attempts+1,lease_owner=NULL,lease_until=NULL,next_check_at=?,receipt='validate_interrupted'
+      WHERE state='CHECKING' AND lease_until<=?`).run(retries,now+(this.definition.intervalMs??10000)/1000,now);
+    const row = db.prepare(`SELECT item.* FROM items item WHERE item.state='QUEUED' AND item.next_check_at<=?
       AND NOT EXISTS (SELECT 1 FROM items older WHERE older.group_key=item.group_key AND older.seq<item.seq
         AND (older.state NOT IN ('SENT','FAILED','CANCELLED') OR (older.state='SENT' AND older.next_check_at>?)))
       ORDER BY item.seq LIMIT 1`).get(now,now);
     if (!row) return null;
-    db.prepare("UPDATE items SET state='CHECKING',lease_owner=?,lease_until=?,attempts=attempts+1 WHERE id=?")
+    db.prepare("UPDATE items SET state='CHECKING',lease_owner=?,lease_until=? WHERE id=?")
       .run(owner,now+leaseSeconds,row.id);
     return db.prepare('SELECT * FROM items WHERE id=?').get(row.id);
   },
   cancel(db, id) {
-    const row = db.prepare('SELECT state FROM items WHERE id=?').get(id);
-    if (!row) return {ok:false,queue_id:id,error:'queue item not found'};
-    if (!['QUEUED','WAITING'].includes(row.state)) return {ok:false,queue_id:id,state:row.state,error:'cannot remove a running or completed item'};
-    db.prepare("UPDATE items SET state='CANCELLED' WHERE id=? AND state IN ('QUEUED','WAITING') AND lease_owner IS NULL").run(id);
-    return {ok:true,queue_id:id,state:'CANCELLED'};
+    // Best effort: a read-only CHECKING action can be cancelled before it sends.
+    // An already SENDING action must finish; the caller sees a silent no-op.
+    const result=db.prepare("UPDATE items SET state='CANCELLED',lease_owner=NULL,lease_until=NULL WHERE id=? AND state IN ('QUEUED','CHECKING')").run(id);
+    return {ok:true,queue_id:id,...(result.changes ? {state:'CANCELLED'} : {skipped:true})};
   },
   list(db) {
-    const items = db.prepare("SELECT * FROM items WHERE state NOT IN ('SENT','CANCELLED') ORDER BY seq").all();
+    const items = db.prepare("SELECT * FROM items WHERE state IN ('QUEUED','CHECKING','SENDING') ORDER BY seq").all();
     return {ok:true,items:items.map(row => ({id:row.id,queue_id:row.id,group:row.group_key,
       state:row.state,attempts:row.attempts,created_at:row.created_at,
       receipt:row.receipt,title:row.title,url:row.url}))};
@@ -123,6 +129,8 @@ export class PlatformDeliveryQueue extends DurableQueueCore {
       attempts INTEGER NOT NULL DEFAULT 0, receipt TEXT);
       CREATE INDEX IF NOT EXISTS queue_group_fifo ON items(group_key,seq);
       CREATE TABLE IF NOT EXISTS request_keys(idem_key TEXT PRIMARY KEY,queue_id TEXT NOT NULL,payload_hash TEXT NOT NULL);`);
+    // Discard obsolete WAITING entries; never silently replay stale sends.
+    db.exec("UPDATE items SET state='CANCELLED' WHERE state='WAITING'");
     const adapter=Object.create(dbPolicy);
     super(db,adapter,now,{concurrency:concurrency??definition.concurrency??1,intervalMs:intervalMs??definition.intervalMs??10000});
     adapter.definition=definition;
@@ -170,15 +178,15 @@ export class PlatformDeliveryQueue extends DurableQueueCore {
     })};
   }
   has(id) { return Boolean(this.db.prepare('SELECT 1 FROM items WHERE id=?').get(id)); }
-  transition(id,owner,from,to,{delay=0,receipt=null}={}) {
+  transition(id,owner,from,to,{delay=0,receipt=null,incrementAttempt=false}={}) {
     const now=this.now();
     return this._transaction(()=>{
       const row=this.db.prepare('SELECT state,lease_owner,lease_until FROM items WHERE id=?').get(id);
       if (!row || row.state!==from || row.lease_owner!==owner || row.lease_until<=now) throw Error('stale queue lease');
-      this.db.prepare('UPDATE items SET state=?,lease_owner=?,lease_until=?,next_check_at=?,receipt=? WHERE id=?')
-        .run(to,['SENT','FAILED','WAITING'].includes(to)?null:owner,
-          ['SENT','FAILED','WAITING'].includes(to)?null:now+this.leaseSeconds,
-          now+delay,receipt,id);
+      this.db.prepare('UPDATE items SET state=?,lease_owner=?,lease_until=?,next_check_at=?,receipt=?,attempts=attempts+? WHERE id=?')
+        .run(to,['SENT','FAILED','QUEUED'].includes(to)?null:owner,
+          ['SENT','FAILED','QUEUED'].includes(to)?null:now+this.leaseSeconds,
+          now+delay,receipt,incrementAttempt?1:0,id);
     });
   }
   process(item) { return this._process(item); }
@@ -201,23 +209,17 @@ export class PlatformDeliveryQueue extends DurableQueueCore {
       sid=started.session_id??started.sessionId;
       if (!sid) throw Error('queue Session creation did not return session_id');
       const checked=await this.runAction({platform:this.platform,action:definition.validate,config,session_id:sid});
-      if (checked?.result?.ok !== true) {
-        // A failed read-only gate must not silently drop its FIFO head.
-        this.transition(item.id,item.lease_owner,'CHECKING','WAITING',{
-          delay:this.intervalMs/1000,receipt:'validate_error',
-        });
-        return;
-      }
+      if (checked?.result?.ok !== true) throw Error('validate_failed');
       const value=checked.result.value;
       const ready=checked?.result?.ok === true && (value === true || value?.ready === true || value?.status === 'ready');
       if (!ready) {
-        this.transition(item.id,item.lease_owner,'CHECKING','WAITING',{
+        this.transition(item.id,item.lease_owner,'CHECKING','QUEUED',{
           delay:this.intervalMs/1000,
           receipt:'not_ready',
         });
         return;
       }
-      this.transition(item.id,item.lease_owner,'CHECKING','SENDING');
+      this.transition(item.id,item.lease_owner,'CHECKING','SENDING',{incrementAttempt:true});
       const outcome=await this.runAction({platform:this.platform,action:definition.action,
         config:typeof definition.execute==='function'?definition.execute(config):config,session_id:sid});
       if (outcome?.result?.ok!==true ||
@@ -229,9 +231,17 @@ export class PlatformDeliveryQueue extends DurableQueueCore {
     } catch(error) {
       const diagnostic='Error;fingerprint='+createHash('sha256').update(String(error)).digest('hex').slice(0,16);
       try {
-        const row=this.db.prepare('SELECT state FROM items WHERE id=?').get(item.id);
-        if (row?.state==='SENDING') this.transition(item.id,item.lease_owner,'SENDING','FAILED',{receipt:diagnostic});
-        else if (row?.state==='CHECKING') this.transition(item.id,item.lease_owner,'CHECKING','WAITING',{delay:this.intervalMs/1000,receipt:diagnostic});
+        const row=this.db.prepare('SELECT state,attempts FROM items WHERE id=?').get(item.id);
+        const retries=definition.retries??1;
+        if (row?.state==='SENDING') {
+          const retry=row.attempts<=retries;
+          this.transition(item.id,item.lease_owner,'SENDING',retry?'QUEUED':'FAILED',{
+            delay:retry?this.intervalMs/1000:0,receipt:diagnostic});
+        } else if (row?.state==='CHECKING') {
+          const retry=row.attempts<retries;
+          this.transition(item.id,item.lease_owner,'CHECKING',retry?'QUEUED':'FAILED',{
+            delay:retry?this.intervalMs/1000:0,receipt:diagnostic,incrementAttempt:true});
+        }
       } catch(transitionError) { this.onDispatchError(transitionError); }
     } finally {
       clearInterval(heartbeat);

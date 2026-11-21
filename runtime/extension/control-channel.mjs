@@ -82,11 +82,12 @@ export class ControlChannel {
     return this.serialize(async () => {
       if (typeof queueId !== 'string' || !queueId) throw new Error('Queue item is required');
       const state = this.normalize(await this.read());
+      // The popup can lag the daemon. A vanished item is always a no-op.
+      if (!(state.queue || []).some(item => item.id === queueId))
+        return {ok:true,skipped:true};
       if (state.request) throw new Error('Another WebHelm operation is already running');
       if (!Number.isFinite(state.daemon?.seenAt) || this.now() - state.daemon.seenAt >= FRESH_MS)
         throw new Error('WebHelm daemon is not responding');
-      if (!(state.queue || []).some(item => item.id === queueId && ['QUEUED','WAITING','BLOCKED','UNCERTAIN'].includes(item.state)))
-        throw new Error('Queue item is no longer cancellable');
       const request = {id:this.makeId(), action:'queue-cancel', queueId, state:'pending', createdAt:this.now()};
       await this.save({...state, request, lastResult:null});
       return {id:request.id,state:'pending'};

@@ -43,6 +43,7 @@ function validPolicy(definition, platform, root) {
   }
   if (definition.concurrency!==undefined && (!Number.isInteger(definition.concurrency) || definition.concurrency<1 || definition.concurrency>32)) throw TypeError('concurrency must be 1..32');
   if (definition.intervalMs!==undefined && (!Number.isInteger(definition.intervalMs) || definition.intervalMs<100 || definition.intervalMs>3600000)) throw TypeError('intervalMs must be 100..3600000');
+  if (definition.retries!==undefined && (!Number.isInteger(definition.retries) || definition.retries<0 || definition.retries>100)) throw TypeError('retries must be 0..100');
 }
 
 export class PlatformQueueRegistry {
@@ -147,7 +148,7 @@ export class PlatformQueueRegistry {
   list() { return {ok:true,items:[...this.records.values()].flatMap(({instance})=>instance.list().items)}; }
   cancel(id) {
     for (const {instance} of this.records.values()) if (instance.has(id)) return instance.cancel(id);
-    return {ok:false,queue_id:id,error:'queue item not found'};
+    return {ok:true,queue_id:id,skipped:true};
   }
   activeCount() { return [...this.records.values()].reduce((sum,{instance})=>sum+instance.active.size,0); }
   async stopScheduler() { this.paused=true;await Promise.all([...this.records.values()].map(({instance})=>instance.stopScheduler())); }

@@ -55,14 +55,14 @@ export async function setStoredSite(chromeApi, url, enabled) {
   return {id:origin,enabled:Boolean(enabled)};
 }
 
-const priority = {FAILED:0,SENDING:1,CHECKING:1,WAITING:2,QUEUED:3};
+const priority = {SENDING:0,CHECKING:0,QUEUED:1};
 function threadKey(item) {
   // Queue groups are provided by registered Platform Policies.
   return `${item.platform||'Queue'}\u0000${item.group||item.id}`;
 }
 
 export function compactQueue(items, {expanded=false,maxHeads=8}={}) {
-  const all=Array.isArray(items) ? items : [];
+  const all=Array.isArray(items) ? items.filter(item=>['QUEUED','CHECKING','SENDING'].includes(item.state)) : [];
   const threads=new Map();
   for (const [index,item] of all.entries()) {
     const key=threadKey(item);
@@ -75,9 +75,8 @@ export function compactQueue(items, {expanded=false,maxHeads=8}={}) {
   const visible=expanded ? heads.flatMap(x=>x.items) : heads.slice(0,Math.max(1,maxHeads)).map(x=>x.head);
   const headFor=new Map(heads.flatMap(x=>x.items.map(item=>[item.id,x.head])));
   const behind=new Map(heads.map(x=>[x.head.id,x.count-1]));
-  const failed=all.filter(x=>x.state==='FAILED').length;
   return {visible,total:all.length,threads:threads.size,behind,headFor,
-    hidden:all.length-visible.length,failed};
+    hidden:all.length-visible.length};
 }
 
 // Statuses describe what the user can do, not internal retry counters.
@@ -86,17 +85,14 @@ export function queueStatusText(item,{head=item,remaining=0}={}) {
   const state=String(item.state||'QUEUED').toUpperCase();
   const following=head.id!==item.id;
   let message;
-  if(following && head.state==='FAILED') message='Queued to send — previous attempt failed';
-  else if(following) message='Waiting behind earlier message';
+  if(following) message='Waiting behind earlier message';
   else message=({
-    FAILED:'Action failed — not retried',
     SENDING:'Sending',
     CHECKING:'Checking delivery',
-    WAITING:'Waiting to send',
     QUEUED:'Queued to send',
   })[state]||state.toLowerCase();
   if(!following && remaining>0)
-    message+=' · '+remaining+' later message'+(remaining===1?'':'s')+(state==='FAILED'?' queued':' waiting');
+    message+=' · '+remaining+' later message'+(remaining===1?'':'s')+' waiting';
   return message;
 }
 

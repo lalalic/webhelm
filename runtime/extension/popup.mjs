@@ -229,8 +229,7 @@ function renderQueue(items, busy, connected) {
           const remove=actionButton('×',false,async()=>{
             try{
               const result=await rpc('workspace.control.queueCancel',{queueId:item.id});
-              if(!result.id)throw Error('Missing queue request ID');
-              el('message').textContent='Waiting for WebHelm daemon…';
+              if(result.id)el('message').textContent='Waiting for WebHelm daemon…';
             }catch(error){el('message').textContent=error.message;}
             refresh();
           },'queue-remove');
@@ -238,18 +237,15 @@ function renderQueue(items, busy, connected) {
         }
         const title=row.querySelector('.queue-title');
         title.textContent=item.title||platform+' message';
-        title.title=(item.title||platform+' message')+
-          (item.state==='FAILED'?' — Action failed; no automatic retry.':'');
+        title.title=item.title||platform+' message';
         row.dataset.queueId=item.id;
         row.dataset.state=item.state;
-        row.classList.toggle('queue-failed',item.state==='FAILED');
         const elapsed=formatQueueElapsed(item.created_at,queueOpenedAtSeconds);
         const attempts=Math.max(0,Number(item.attempts)||0);
-        row.querySelector('.queue-meta').textContent=(item.state==='FAILED'?'FAILED ':'')+'('+(elapsed??'–')+'/'+attempts+')';
+        row.querySelector('.queue-meta').textContent='('+(elapsed??'–')+'/'+attempts+')';
         const remove=row.querySelector('.queue-remove');
-        const cancellable=['QUEUED','WAITING'].includes(item.state);
-        remove.disabled=!cancellable||busy||!connected;
-        remove.title=cancellable?'Remove '+title.textContent+' from queue':'Cannot remove a running or completed submission';
+        remove.disabled=busy||!connected;
+        remove.title='Cancel '+title.textContent+' (best effort before sending)';
         remove.setAttribute('aria-label',remove.title);
         if(row.parentElement!==rows)rows.append(row);
       }

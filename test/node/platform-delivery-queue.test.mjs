@@ -42,18 +42,53 @@ test('queue persistence, idempotency, cancellation and immutable claimed actions
   const b=add(f.q,'B','second','key2');
   assert.equal(f.q.cancel(b.queue_id).state,'CANCELLED');
   assert.equal(f.q.claim('workerA').id,a.queue_id);
-  assert.equal(f.q.cancel(a.queue_id).ok,false);
+  assert.equal(f.q.cancel(a.queue_id).state,'CANCELLED','pre-send validation is cancellable');
+  assert.deepEqual(f.q.cancel(a.queue_id),{ok:true,queue_id:a.queue_id,skipped:true});
+  assert.deepEqual(f.q.cancel('missing'),{ok:true,queue_id:'missing',skipped:true});
   const again=new PlatformDeliveryQueue(f.options);t.after(()=>again.shutdown());
   assert.equal(again.has(a.queue_id),true);
   assert.equal(again.enqueue({thread_id:'A',message:'first',idempotency_key:'key1',mergeable:false}).queue_id,a.queue_id);
 });
 
-test('NOT_READY waits, WAITING tail merges atomically, READY invokes same delivery Action once',async t=>{
+test('best-effort cancellation never interrupts an already sending action',async t=>{
+  const f=fixture();t.after(f.clean);
+  const a=add(f.q,'A','one','key1');
+  f.q.claim('owner');
+  f.q.transition(a.queue_id,'owner','CHECKING','SENDING',{incrementAttempt:true});
+  assert.deepEqual(f.q.cancel(a.queue_id),{ok:true,queue_id:a.queue_id,skipped:true});
+  assert.equal(f.q.rows()[0].state,'SENDING');
+  assert.equal(f.q.list().items.length,1);
+});
+
+test('cancel during validation prevents delivery even if validation later succeeds',async t=>{
+  const f=fixture();t.after(f.clean);
+  const a=add(f.q,'A','one','key1');
+  let releaseValidation,startedValidation;
+  const entered=new Promise(resolve=>{startedValidation=resolve;});
+  const calls=[];
+  f.q.runAction=async request=>{
+    calls.push(request.action);
+    if(request.action===policy.validate){
+      startedValidation();
+      return new Promise(resolve=>{releaseValidation=()=>resolve({result:{ok:true,value:true}});});
+    }
+    return {result:{ok:true,value:{verified_by:'send-clicked'}}};
+  };
+  const process=f.q.process(f.q.claim('owner'));
+  await entered;
+  assert.equal(f.q.cancel(a.queue_id).state,'CANCELLED');
+  releaseValidation();
+  await process;
+  assert.deepEqual(calls,['validate_new_turn_ready'],'cancelled validation must never proceed to send');
+  assert.equal(f.q.list().items.length,0);
+});
+
+test('NOT_READY returns to QUEUED, tail merges atomically, READY sends once',async t=>{
   const f=fixture();t.after(f.clean);
   f.ready(false);
   const first=add(f.q,'A','one','k1',true);
   await f.q.process(f.q.claim('worker-1'));
-  assert.equal(f.q.list().items[0].state,'WAITING');
+  assert.equal(f.q.list().items[0].state,'QUEUED');
   assert.deepEqual(f.counts(),{starts:1,stops:1});
   const merged=add(f.q,'A','two','k2',true);
   assert.equal(merged.queue_id,first.queue_id);
@@ -84,15 +119,63 @@ test('FIFO by group, cooldown, no merging claimed work, independent groups',asyn
   assert.equal(f.q.claim('third').id,b.queue_id);
 });
 
-test('expired SENDING is terminal FAILED and does not retry the action',async t=>{
+test('policy retries once by default after interrupted send, then drops without replay',async t=>{
   const f=fixture();t.after(f.clean);
   const a=add(f.q,'A','one','key1');const b=add(f.q,'A','two','key2');
-  const claimed=f.q.claim('old');f.q.transition(a.queue_id,'old','CHECKING','SENDING');
+  f.q.claim('old');f.q.transition(a.queue_id,'old','CHECKING','SENDING',{incrementAttempt:true});
   f.advance(1000);
-  assert.equal(f.q.claim('new').id,b.queue_id);
-  assert.equal(f.q.rows()[0].state,'FAILED');
+  assert.equal(f.q.claim('new'),null,'failure retries after interval, preserving FIFO');
+  assert.equal(f.q.rows()[0].state,'QUEUED');
   assert.equal(f.q.rows()[0].receipt,'send_interrupted');
+  f.advance(1011);
+  const retried=f.q.claim('retry');
+  assert.equal(retried.id,a.queue_id);
+  f.q.transition(a.queue_id,'retry','CHECKING','SENDING',{incrementAttempt:true});
+  f.advance(2000);
+  assert.equal(f.q.claim('next').id,b.queue_id);
+  assert.equal(f.q.rows()[0].state,'FAILED');
+  assert.equal(f.q.list().items.length,1,'terminal failed message leaves the active queue');
+  assert.equal(f.q.list().items[0].id,b.queue_id);
+  assert.equal(add(f.q,'A','one','key1').state,'FAILED','duplicate key is not replayed');
   assert.equal(f.calls.length,0);
+});
+
+test('policy retries:0 drops an interrupted send immediately',async t=>{
+  const f=fixture({...policy,retries:0});t.after(f.clean);
+  const a=add(f.q,'A','one','key1');const b=add(f.q,'A','two','key2');
+  f.q.claim('worker');f.q.transition(a.queue_id,'worker','CHECKING','SENDING',{incrementAttempt:true});
+  f.advance(1000);
+  assert.equal(f.q.claim('next').id,b.queue_id);
+  assert.equal(f.q.rows()[0].state,'FAILED');
+  assert.equal(f.q.list().items.length,1);
+});
+
+test('failed sends retry once on the policy interval then drop after budget',async t=>{
+  const f=fixture();t.after(f.clean);
+  const a=add(f.q,'A','one','key1');
+  f.q.runAction=async request=>({result:request.action===policy.validate
+    ?{ok:true,value:true}:{ok:false,error:'send failed'}});
+  await f.q.process(f.q.claim('first'));
+  assert.equal(f.q.rows()[0].state,'QUEUED');
+  assert.equal(f.q.rows()[0].attempts,1);
+  assert.equal(f.q.claim('too-early'),null);
+  f.advance(111);
+  await f.q.process(f.q.claim('second'));
+  assert.equal(f.q.rows()[0].state,'FAILED');
+  assert.equal(f.q.rows()[0].attempts,2);
+  assert.equal(f.q.list().items.length,0);
+  assert.equal(f.q.enqueue({thread_id:'A',message:'one',idempotency_key:'key1',mergeable:false}).queue_id,a.queue_id);
+});
+
+test('NOT_READY does not spend failure retry budget',async t=>{
+  const f=fixture({...policy,retries:0});t.after(f.clean);
+  const a=add(f.q,'A','one','key1');f.ready(false);
+  await f.q.process(f.q.claim('first'));
+  assert.equal(f.q.rows()[0].state,'QUEUED');
+  assert.equal(f.q.rows()[0].attempts,0);
+  f.advance(112);f.ready(true);
+  await f.q.process(f.q.claim('second'));
+  assert.equal(f.q.rows()[0].state,'SENT');
 });
 
 test('two registered queues can persist independently under one root',async t=>{
@@ -106,15 +189,15 @@ test('two registered queues can persist independently under one root',async t=>{
   assert.equal(other.rows().length,1);
 });
 
-test('failed validation remains WAITING and blocks later actions in the same FIFO group',async t=>{
+test('failed validation stays QUEUED and blocks later actions in the same FIFO group',async t=>{
   const f=fixture();t.after(f.clean);
   const first=add(f.q,'same','first','gate-a');
   const second=add(f.q,'same','second','gate-b');
   f.q.runAction=async request=>({result:{ok:false,error:'offline'}});
   await f.q.process(f.q.claim('worker-1'));
   const row=f.q.rows().find(r=>r.id===first.queue_id);
-  assert.equal(row.state,'WAITING');
-  assert.equal(row.receipt,'validate_error');
+  assert.equal(row.state,'QUEUED');
+  assert.match(row.receipt,/^Error;fingerprint=/);
   assert.equal(f.q.claim('worker-2'),null,'successor must not run while validation is unconfirmed');
   assert.equal(f.q.rows().find(r=>r.id===second.queue_id).state,'QUEUED');
 });

@@ -41,6 +41,7 @@ test('platform scanner discovers any queues/*.mjs and exposes action title/group
   assert.equal(items[0].group,'T');
   assert.equal(f.registry.cancel(first.queue_id).state,'CANCELLED');
   assert.equal(f.registry.list().items.length,1);
+  assert.deepEqual(f.registry.cancel('missing-id'),{ok:true,queue_id:'missing-id',skipped:true});
 });
 
 test('watcher discovers new folders, hot reloads valid modules, preserves existing on invalid change',async t=>{

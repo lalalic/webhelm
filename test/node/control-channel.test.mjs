@@ -36,7 +36,7 @@ test('daemon heartbeat reports only fresh session state',async()=>{
 
 test('service-worker control RPC forwards queue state through heartbeat and poll',async()=>{
   const {channel}=build();
-  const queue=[{id:'q-1',state:'QUEUED',attempts:0},{id:'q-2',state:'WAITING',attempts:1}];
+  const queue=[{id:'q-1',state:'QUEUED',attempts:0},{id:'q-2',state:'QUEUED',attempts:1}];
   let badgeRefreshes=0;
   const rpc=createControlRpc({control:channel,manager:{async list(){return {workspaces:[]};}},
     summarizeWorkspaces, scheduleBadge(){badgeRefreshes++;}});
@@ -204,9 +204,14 @@ test('queue state relays through control storage; non-running entries are remova
   assert.deepEqual(await channel.poll(sessions,queued),{id:command.id,action:'queue-cancel',queueId:'queued-1'});
   await channel.complete(command.id,{ok:true,queue_id:'queued-1',state:'CANCELLED'});
   await channel.poll(sessions,[{...queued[0],state:'CHECKING'}]);
-  await assert.rejects(channel.requestQueueCancel('queued-1'),/no longer cancellable/);
-  await channel.poll(sessions,[{...queued[0],state:'UNCERTAIN'}]);
-  const uncertain=await channel.requestQueueCancel('queued-1');
-  assert.equal((await channel.poll(sessions,[{...queued[0],state:'UNCERTAIN'}])).queueId,'queued-1');
-  await channel.complete(uncertain.id,{ok:true,queue_id:'queued-1',state:'CANCELLED'});
+  const checking=await channel.requestQueueCancel('queued-1');
+  assert.equal((await channel.poll(sessions,[{...queued[0],state:'CHECKING'}])).queueId,'queued-1');
+  await channel.complete(checking.id,{ok:true,queue_id:'queued-1',state:'CANCELLED'});
+  await channel.poll(sessions,[{...queued[0],state:'SENDING'}]);
+  const sending=await channel.requestQueueCancel('queued-1');
+  assert.equal((await channel.poll(sessions,[{...queued[0],state:'SENDING'}])).queueId,'queued-1');
+  await channel.complete(sending.id,{ok:true,queue_id:'queued-1',skipped:true});
+  await channel.poll(sessions,[]);
+  assert.deepEqual(await channel.requestQueueCancel('queued-1'),{ok:true,skipped:true});
+  assert.equal((await channel.status()).request,null,'stale cancel must not create a command');
 });
