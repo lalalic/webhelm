@@ -60,6 +60,10 @@ try {
   assert.ok(sid,'failed to create owned real Chrome Session');
   evidence.session_ids.push(sid);
   record('session_started',{session_id:sid});
+  // Session creation schedules initial navigation; wait for it to settle before
+  // the new-thread Action navigates with its own ?prompt= URL.
+  const initialLoad=await ipc('exec',{session_id:sid,code:'await wait_for_load();'});
+  assert.equal(initialLoad?.ok,true,'new-thread browser Session did not finish initial load');
   async function runDirect(action,config,session_id=sid) {
     const value=await ipc('platform-run',{platform:'chatgpt',action,config,session_id,workspace:'WebHelm'});
     const result=value?.result;
