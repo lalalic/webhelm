@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {DesignMode,isChatThread,activeChatThread} from '../../runtime/extension/design-mode.mjs';
 import {WorkspaceManager} from '../../runtime/extension/workspace-manager.mjs';
+import {summarizeWorkspaces} from '../../runtime/extension/workspace-summary.mjs';
+import {createControlRpc} from '../../runtime/extension/control-rpc.mjs';
 
 function mockChrome({crossWindow=false,chatUrl='https://chatgpt.com/c/6b01e2f1-d7f4-83e9-a409-bcef3a6ef801'}={}) {
   let splitId=91, nextId=200;
@@ -46,7 +48,7 @@ function mockChrome({crossWindow=false,chatUrl='https://chatgpt.com/c/6b01e2f1-d
     unsplit:async(id)=>{for(const t of tabs)if(t.splitViewId===id)t.splitViewId=-1},
     remove:async(id)=>{const i=tabs.findIndex(t=>t.id===id);if(i>=0)tabs.splice(i,1)},
   };
-  const sessionState={};
+  const sessionState={},localState={};
   const chrome={
     tabs:methods,tabGroups:{
       get:async(id)=>{if(!groups.has(id))throw Error('No group');return {...groups.get(id)}},
@@ -59,15 +61,15 @@ function mockChrome({crossWindow=false,chatUrl='https://chatgpt.com/c/6b01e2f1-d
     },
     storage:{
       session:{get:async key=>({[key]:sessionState[key]}),set:async x=>Object.assign(sessionState,x)},
-      local:{get:async()=>({}),set:async()=>{}},
+      local:{get:async key=>({[key]:localState[key]}),set:async x=>Object.assign(localState,x)},
     },
     runtime:{getURL:path=>'chrome-extension://abcdefghijklmnop/'+path},
   };
   const manager=new WorkspaceManager(chrome);
-  const control={status:async()=>({
-    connected:true,sessions:[{session_id:'s1',tabId:10,tabIds:[10],workspace:'WebHelm'}],
-  })};
-  return {chrome,manager,control,tabs,groups,sessionState,splitCalls:()=>lastSplitCalls,
+  let daemonSessions=[{session_id:'s1',tabId:10,tabIds:[10],workspace:'WebHelm'}];
+  const control={status:async()=>({connected:true,sessions:daemonSessions}),
+    setSessions:sessions=>{daemonSessions=sessions;}};
+  return {chrome,manager,control,tabs,groups,sessionState,localState,splitCalls:()=>lastSplitCalls,
     activate(id) {
       const tab=tabs.find(t=>t.id===id);
       for(const t of tabs)if(t.windowId===tab.windowId)t.active=false;
@@ -121,11 +123,13 @@ test('does not create a ChatGPT thread if none is open',async()=>{
   assert.equal(m.manager.designCompanionTabIds.size,0);
 });
 
-test('reloaded extension recovers design companion protection from session state',async()=>{
+test('reloaded Extension recovers the original layout from durable local state',async()=>{
   const m=mockChrome();
   const first=new DesignMode(m.chrome,m.manager,m.control);
   await first.toggle('s1');
-  // Simulate the extension service-worker restarting with an empty manager.
+  // Unpacked Extension reloads clear storage.session, unlike storage.local.
+  for (const key of Object.keys(m.sessionState)) delete m.sessionState[key];
+  assert.ok(m.localState['webhelm.design-mode.v1'].s1.original);
   const replacementManager=new WorkspaceManager(m.chrome);
   const replacement=new DesignMode(m.chrome,replacementManager,m.control);
   await replacement.ready;
@@ -162,4 +166,79 @@ test('exit remains available when another tab becomes active',async()=>{
   assert.equal(await activeChatThread(m.chrome),null);
   assert.equal((await mode.closeSession('s1')).restored,true);
   assert.equal(m.tabs.find(t=>t.id===11).splitViewId,-1);
+});
+
+
+test('legacy session-only records migrate to durable local storage',async()=>{
+  const m=mockChrome();
+  const first=new DesignMode(m.chrome,m.manager,m.control);
+  await first.toggle('s1');
+  const key='webhelm.design-mode.v1';
+  m.sessionState[key]=structuredClone(m.localState[key]);
+  delete m.localState[key];
+  const next=new DesignMode(m.chrome,new WorkspaceManager(m.chrome),m.control);
+  await next.ready;
+  assert.equal(next.hasSession('s1'),true);
+  assert.ok(m.localState[key].s1.original);
+  await next.toggle('s1');
+  assert.equal(m.tabs.find(t=>t.id===11).groupId,9);
+});
+
+test('adopts an intact orphan Split View after Extension reload without opening a new one',async()=>{
+  const m=mockChrome();
+  const agent=m.tabs.find(t=>t.id===10), chat=m.tabs.find(t=>t.id===11);
+  chat.groupId=agent.groupId;
+  chat.splitViewId=227;
+  agent.splitViewId=227;
+  const mode=new DesignMode(m.chrome,m.manager,m.control);
+  await mode.reconcile();
+  assert.equal(mode.hasSession('s1'),true);
+  assert.equal(mode.activeSessionIds()[0],'s1');
+  assert.equal(m.manager.designCompanionTabIds.has(chat.id),true);
+  assert.equal(mode.records.get('s1').adopted,true);
+  assert.equal(m.splitCalls(),0,'must reuse existing Chrome Split View');
+  await mode.toggle('s1');
+  assert.equal(agent.splitViewId,-1);
+  assert.equal(chat.splitViewId,-1);
+  assert.equal(chat.groupId,-1,'untracked ChatGPT tab leaves WebHelm Group safely');
+  assert.equal(chat.id,11,'existing tab identity preserved');
+  assert.equal(m.manager.designCompanionTabIds.size,0);
+});
+
+test('when daemon GC removes a Session, split pair unsplits and restores its tab',async()=>{
+  const m=mockChrome();
+  const mode=new DesignMode(m.chrome,m.manager,m.control);
+  await mode.toggle('s1');
+  m.control.setSessions([]);
+  await mode.reconcile();
+  assert.equal(mode.hasSession('s1'),false);
+  assert.equal(m.tabs.find(t=>t.id===11).groupId,9);
+  assert.equal(m.tabs.find(t=>t.id===11).splitViewId,-1);
+  assert.equal(Object.keys(m.localState['webhelm.design-mode.v1']).length,0);
+});
+
+test('manual Chrome Unsplit resets Design Mode instead of displaying stale Exit button',async()=>{
+  const m=mockChrome();
+  const mode=new DesignMode(m.chrome,m.manager,m.control);
+  await mode.toggle('s1');
+  await m.chrome.tabs.unsplit(91);
+  await mode.reconcile();
+  assert.equal(mode.hasSession('s1'),false);
+  assert.equal(m.tabs.find(t=>t.id===11).groupId,9);
+});
+
+
+test('popup status recognizes a pre-existing Split View after state loss',async()=>{
+  const m=mockChrome();
+  const agent=m.tabs.find(t=>t.id===10), chat=m.tabs.find(t=>t.id===11);
+  agent.splitViewId=chat.splitViewId=301;
+  chat.groupId=agent.groupId;
+  const design=new DesignMode(m.chrome,m.manager,m.control);
+  const rpc=createControlRpc({control:m.control,design,chromeApi:m.chrome,
+    manager:{async list(){return {workspaces:[{name:'WebHelm',initialized:true,poolSize:8,idle:0,leased:1}]};}},
+    summarizeWorkspaces,scheduleBadge(){}});
+  const state=await rpc('workspace.control.status');
+  assert.equal(state.workspaces[0].sessions[0].designActive,true);
+  assert.equal(m.splitCalls(),0);
+  assert.equal(m.localState['webhelm.design-mode.v1'].s1.adopted,true);
 });

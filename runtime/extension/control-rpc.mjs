@@ -12,6 +12,7 @@ export function createControlRpc({control, manager, design=null, summarizeWorksp
   return async function controlRpc(method, args = {}) {
     switch (method) {
       case "workspace.control.status": {
+        if (design) await design.reconcile();
         const state = await control.status();
         const summary = summarizeWorkspaces((await manager.list()).workspaces, state.sessions);
         const workspaces = await Promise.all(summary.workspaces.map(async workspace => ({
@@ -44,12 +45,12 @@ export function createControlRpc({control, manager, design=null, summarizeWorksp
       }
       case "workspace.control.design.sessions": {
         if (!design) return [];
-        await design.ready;
+        await design.reconcile();
         return design.activeSessionIds();
       }
       case "workspace.control.design.records": {
         if (!design) return [];
-        await design.ready;
+        await design.reconcile();
         return design.allSessionIds();
       }
       case "workspace.control.design.closeSession": {

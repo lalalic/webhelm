@@ -63,6 +63,10 @@ still requires a phone-testing tool.
   the Extension to **unsplit and restore the companion ChatGPT Tab first**.
   If restoration fails, leave ownership protected and report a real error;
   never silently recycle a still-shared Tab.
+- Split metadata, including the original ChatGPT Tab location, is saved in
+  Extension local storage across Extension reloads. An older already-split
+  pair lacking metadata is recognized safely; exit unsplits and ungroups the
+  ChatGPT Tab without guessing its previous window or index.
 - If the daemon restarts without its former Session, the Extension checks
   for now-orphaned Design records after the daemon reconnects, then restores
   the companion. During disconnection it waits, avoiding false GC.

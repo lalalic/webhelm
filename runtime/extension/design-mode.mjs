@@ -35,17 +35,23 @@ export class DesignMode {
   }
 
   async load() {
-    const saved = (await this.chrome.storage.session.get(KEY))[KEY] || {};
+    // storage.session is cleared when Chrome reloads an unpacked Extension.
+    // The original tab location must survive Extension reloads and updates.
+    const persisted = (await this.chrome.storage.local.get(KEY))[KEY];
+    const legacy = persisted === undefined
+      ? (await this.chrome.storage.session.get(KEY))[KEY] : undefined;
+    const saved = persisted ?? legacy ?? {};
     for (const [id, value] of Object.entries(saved)) {
       if (!value || !validId(value.chatTabId) || !validId(value.agentTabId)) continue;
       this.records.set(id, value);
       this.manager.designCompanionTabIds.add(value.chatTabId);
       if (validId(value.groupId)) this.manager.designActiveGroupIds.add(value.groupId);
     }
+    if (legacy !== undefined) await this.save();
   }
 
   async save() {
-    await this.chrome.storage.session.set({[KEY]:Object.fromEntries(this.records)});
+    await this.chrome.storage.local.set({[KEY]:Object.fromEntries(this.records)});
   }
 
   hasSession(sessionId) { return this.records.has(sessionId); }
@@ -60,12 +66,16 @@ export class DesignMode {
 
   async toggle(sessionId) {
     await this.ready;
-    return this.serialize(() => this.records.has(sessionId) ? this.disable(sessionId) : this.enable(sessionId));
+    return this.serialize(async () => {
+      await this.reconcileState();
+      return this.records.has(sessionId) ? this.disable(sessionId) : this.enable(sessionId);
+    });
   }
 
   async enableSession(sessionId) {
     await this.ready;
     return this.serialize(async () => {
+      await this.reconcileState();
       const record=this.records.get(sessionId);
       if(record) {
         if(record.state!=='active') throw Error('Design Mode restore is pending; cannot enable');
@@ -159,6 +169,12 @@ export class DesignMode {
       await this.chrome.tabs.unsplit(record.splitViewId).catch(()=>{});
     }
     chat=await this.chrome.tabs.get(id);
+    // Orphan splits created before persistence was fixed have no known prior
+    // window/group/index. Never guess or move the user's ChatGPT tab.
+    if (!original) {
+      if (chat.groupId === record.groupId) await this.chrome.tabs.ungroup([id]);
+      return;
+    }
     if (chat.groupId >= 0) await this.chrome.tabs.ungroup([id]);
     if (validId(original.windowId)) {
       const windowExists = await this.chrome.windows.get(original.windowId).then(()=>true,()=>false);
@@ -207,15 +223,57 @@ export class DesignMode {
     return this.serialize(()=>this.disable(sessionId));
   }
 
+  async reconcileState() {
+    const daemon=await this.control.status();
+    if (!daemon.connected) return;
+    const live=new Set(daemon.sessions.map(s=>s.session_id));
+    for (const id of [...this.records.keys()]) {
+      if (!live.has(id)) await this.disable(id).catch(()=>{});
+    }
+    const tabs=await this.chrome.tabs.query({});
+    const byId=new Map(tabs.map(tab=>[tab.id,tab]));
+    // Chrome may unsplit a pair outside WebHelm. Restore its original layout
+    // and stop renewing that Session rather than showing a stale Exit button.
+    for (const [id, record] of [...this.records]) {
+      const agent=byId.get(record.agentTabId), chat=byId.get(record.chatTabId);
+      const together=agent && chat && validId(agent.splitViewId) &&
+        agent.splitViewId!==-1 && agent.splitViewId===chat.splitViewId;
+      if (live.has(id) && record.state==='active' && !together)
+        await this.disable(id).catch(()=>{});
+      else if (live.has(id) && together && record.state==='preparing') {
+        record.state='active';
+        record.splitViewId=agent.splitViewId;
+        await this.save();
+      }
+    }
+    // Older Extension versions stored only ephemeral state. Adopt an intact,
+    // already-split pair only when a *live* WebHelm Session owns one pane and
+    // the other is an actual ChatGPT thread in the same window and group.
+    for (const session of daemon.sessions) {
+      if (this.records.has(session.session_id)) continue;
+      const agent=byId.get(session.tabId);
+      if (!agent || !validId(agent.groupId) || agent.groupId<0 ||
+          !validId(agent.splitViewId) || agent.splitViewId===-1) continue;
+      const candidates=tabs.filter(tab=>tab.id!==agent.id &&
+        tab.windowId===agent.windowId && tab.groupId===agent.groupId &&
+        tab.splitViewId===agent.splitViewId && isChatThread(tab.url) &&
+        !this.manager.designCompanionTabIds.has(tab.id));
+      if (candidates.length!==1) continue;
+      const chat=candidates[0];
+      this.records.set(session.session_id,{
+        sessionId:session.session_id,agentTabId:agent.id,chatTabId:chat.id,
+        groupId:agent.groupId,agentGroupCollapsed:false,original:null,
+        state:'active',splitViewId:agent.splitViewId,placeholderTabId:null,
+        adopted:true,
+      });
+      this.manager.designCompanionTabIds.add(chat.id);
+      this.manager.designActiveGroupIds.add(agent.groupId);
+      await this.save();
+    }
+  }
+
   async reconcile() {
     await this.ready;
-    return this.serialize(async()=>{
-      const daemon=await this.control.status();
-      if (!daemon.connected) return;
-      const live=new Set(daemon.sessions.map(s=>s.session_id));
-      for(const id of [...this.records.keys()]){
-        if (!live.has(id)) await this.disable(id).catch(()=>{});
-      }
-    });
+    return this.serialize(()=>this.reconcileState());
   }
 }

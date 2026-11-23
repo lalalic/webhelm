@@ -52,7 +52,7 @@ async function removeLegacyContextMenu() {
   catch { /* already absent */ }
 }
 
-design.ready.then(() => manager.restoreConfiguredWorkspaces())
+design.reconcile().then(() => manager.restoreConfiguredWorkspaces())
   .then(scheduleBadge)
   .catch(error => console.warn("WebHelm failed to restore configured workspaces", error));
 removeLegacyContextMenu().catch(() => {});
