@@ -48,3 +48,13 @@ export function sameIdleUrl(actual, expected) {
     return url.protocol === 'chrome-extension:' && url.href === idle.href;
   } catch { return false; }
 }
+
+// A Design-created Session belongs to the split. Once the pair disappears,
+// return its tab to the pool; a Session merely attached to Design Mode survives.
+// Null means the Extension could not be reached, not that its splits ended.
+export function endedDesignSessions(sessions, activeIds) {
+  if (!Array.isArray(activeIds)) return [];
+  const active=new Set(activeIds);
+  return [...sessions].filter(s => s.designOwned && s.designWasEnabled &&
+    !s.closing && !s.poisoned && !active.has(s.session_id));
+}

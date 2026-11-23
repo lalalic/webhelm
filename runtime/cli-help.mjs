@@ -149,7 +149,8 @@ Usage:
 
 Restores the companion ChatGPT Tab to its original window/group/index.
 Only Sessions created with design start are also stopped; attached Sessions
-return to ordinary Session lifecycle.
+return to ordinary Session lifecycle. Extension icon exit or manual Chrome
+Unsplit applies the same ownership rule on the next daemon poll.
 A Session stopped or garbage-collected independently also auto-unsplits.
 
 Example:

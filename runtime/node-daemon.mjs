@@ -9,7 +9,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { invokePlatformAction } from './platforms.mjs';
 import {createSiteKeepaliveScheduler} from './site-keepalive.mjs';
 import { PlatformQueueRegistry } from './queue-registry.mjs';
-import { idleUrlFromIdentity, sameIdleUrl, staleSession, withinDeadline, SessionDeadlineError } from './session-lifecycle.mjs';
+import { idleUrlFromIdentity, sameIdleUrl, staleSession, withinDeadline, SessionDeadlineError, endedDesignSessions } from './session-lifecycle.mjs';
 import { stopMatchingSessions } from './session-control.mjs';
 import { ensureManagedChrome } from './chrome.mjs';
 import { ensureExtensionLoaded } from './extension-manager.mjs';
@@ -463,7 +463,9 @@ async function enableDesignMode(s) {
   await extensionCall(null,'workspace.control.heartbeat',{
     sessions:visibleSessions(),queue:queueRegistry?.list().items||[],
   });
-  return extensionCall(null,'workspace.control.design.enable',{sessionId:s.session_id});
+  const split=await extensionCall(null,'workspace.control.design.enable',{sessionId:s.session_id});
+  s.designWasEnabled=true;
+  return split;
 }
 
 function requireCliDesignSession(id) {
@@ -735,9 +737,20 @@ async function pollExtensionControl() {
   if (controlPollActive || shuttingDown) return;
   controlPollActive = true;
   try {
-    const designSessionIds=await extensionCall(null,'workspace.control.design.sessions').catch(()=>[]);
-    for (const id of Array.isArray(designSessionIds)?designSessionIds:[]) {
-      try { heartbeatSession(id); } catch { /* Session already ended */ }
+    // Extension records are authoritative only on successful contact. A
+    // temporary RPC failure must never close user-owned browser sessions.
+    const designSessionIds=await extensionCall(null,'workspace.control.design.sessions').catch(error=>{
+      console.warn(`WebHelm Design Mode status unavailable: ${error.message}`);
+      return null;
+    });
+    if (Array.isArray(designSessionIds)) {
+      for (const id of designSessionIds) {
+        try { heartbeatSession(id); } catch { /* Session already ended */ }
+      }
+      for (const s of endedDesignSessions(sessions.values(),designSessionIds)) {
+        try { await stopSession(s.session_id); }
+        catch(error){console.warn(`WebHelm Design Mode release failed for ${s.session_id}: ${error.message}`);}
+      }
     }
     const pendingAction = await extensionCall(null,'workspace.control.poll',{sessions:visibleSessions(),queue:(await getQueueRegistry()).list().items});
     if (!pendingAction) return;

@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {staleSession,idleUrlFromIdentity,sameIdleUrl,SESSION_IDLE_MS} from '../../runtime/session-lifecycle.mjs';
+import {staleSession,idleUrlFromIdentity,sameIdleUrl,SESSION_IDLE_MS,endedDesignSessions} from '../../runtime/session-lifecycle.mjs';
 
 test('session heartbeat and inflight operations prevent reclaim',()=>{
   const s={last_used_at:100,inFlight:0,closing:false};
@@ -38,4 +38,18 @@ test('new Lease tabId is absent from idle URL',()=>{
 test('unrelated Lease query parameters are never carried into idle URLs',()=>{
   const lease='chrome-extension://abc/helm.html?workspace=WebHelm&role=lease&tabId=41&trace=hello';
   assert.equal(idleUrlFromIdentity(lease),'chrome-extension://abc/helm.html?workspace=WebHelm&role=idle');
+});
+
+
+test('unsplit closes only Design Mode-created Sessions after a confirmed Extension snapshot',()=>{
+  const created={session_id:'created',designOwned:true,designWasEnabled:true,closing:false};
+  const attached={session_id:'attached',designOwned:false,designWasEnabled:true,closing:false};
+  const ordinary={session_id:'ordinary',designOwned:false,closing:false};
+  const preparing={session_id:'preparing',designOwned:true,designWasEnabled:false,closing:false};
+  const stopping={session_id:'stopping',designOwned:true,designWasEnabled:true,closing:true};
+  const all=[created,attached,ordinary,preparing,stopping];
+  assert.deepEqual(endedDesignSessions(all,null),[], 'daemon disconnect is not Unsplit');
+  assert.deepEqual(endedDesignSessions(all,['created']),[], 'active split must stay alive');
+  assert.deepEqual(endedDesignSessions(all,[]).map(s=>s.session_id),['created'],
+    'only the completed Design-created Session should be reclaimed');
 });

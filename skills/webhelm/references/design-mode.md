@@ -59,6 +59,11 @@ still requires a phone-testing tool.
 
 - Design Mode Sessions are renewed by the existing daemon heartbeat.
   **No extra keepalive service** is required.
+- Unsplit by the Extension icon **or by Chrome itself** closes and recycles
+  Sessions created with `design start` on the next daemon poll (normally within 3 seconds).
+  A Session only attached with `design attach` remains alive and returns
+  to its normal five-minute idle/GC policy. Failed Extension status reads must
+  not be interpreted as a successful Unsplit.
 - When a Session stops or is garbage-collected, the daemon requests
   the Extension to **unsplit and restore the companion ChatGPT Tab first**.
   If restoration fails, leave ownership protected and report a real error;
