@@ -3,9 +3,11 @@ import { ControlChannel } from "./control-channel.mjs";
 import { summarizeWorkspaces } from "./workspace-summary.mjs";
 import { sessionBadge } from "./session-badge.mjs";
 import { createControlRpc } from "./control-rpc.mjs";
+import { DesignMode } from "./design-mode.mjs";
 
 const manager = new WorkspaceManager(chrome);
 const control = new ControlChannel(chrome);
+const design = new DesignMode(chrome, manager, control);
 manager.setOwnershipProvider(async () => {
   const state = await control.status();
   return state.connected ? state.sessions : null;
@@ -37,6 +39,7 @@ async function scheduleBadgeAlarm() {
 }
 chrome.alarms.onAlarm.addListener(alarm => {
   if (alarm.name === BADGE_ALARM) scheduleBadge();
+  if (alarm.name === ORPHAN_ALARM) design.reconcile().catch(error => console.warn("Design Mode recovery:",error));
   if (alarm.name === ORPHAN_ALARM) manager.recoverConfiguredOrphans().catch(error => {
     console.warn("WebHelm orphan lease recovery failed", error);
   });
@@ -49,7 +52,7 @@ async function removeLegacyContextMenu() {
   catch { /* already absent */ }
 }
 
-manager.restoreConfiguredWorkspaces()
+design.ready.then(() => manager.restoreConfiguredWorkspaces())
   .then(scheduleBadge)
   .catch(error => console.warn("WebHelm failed to restore configured workspaces", error));
 removeLegacyContextMenu().catch(() => {});
@@ -62,10 +65,11 @@ chrome.runtime.onStartup.addListener(() => {
   scheduleBadge();
 });
 
-const controlRpc = createControlRpc({control, manager, summarizeWorkspaces, scheduleBadge});
+const controlRpc = createControlRpc({control, manager, design, summarizeWorkspaces, scheduleBadge});
 
 globalThis.browserWorkspaceManagerRpc = async (request) => {
   try {
+    await design.ready;
     const method = String(request?.method || "");
     const result = method.startsWith("workspace.control.")
       ? await controlRpc(method, request.args || {})
@@ -104,7 +108,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         !["workspace.control.requestStop", "workspace.control.queueCancel", "workspace.control.status",
          "workspace.control.activateTab", "workspace.control.openQueue",
          "workspace.control.site.toggle", "workspace.control.site.open",
-         "workspace.control.site.remove"].includes(request.method))) {
+         "workspace.control.site.remove", "workspace.control.design.toggle"].includes(request.method))) {
     sendResponse({ok:false,error:{message:"WebHelm control actions require the toolbar popup"}});
     return false;
   }

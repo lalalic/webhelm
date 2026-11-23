@@ -45,6 +45,32 @@ function actionButton(label, disabled, onClick, className = '') {
   return button;
 }
 
+function iconButton(kind, disabled, onClick, title, active = false) {
+  const button = actionButton('', disabled, onClick, 'icon-button' + (active?' design-active':''));
+  button.title=title;
+  button.setAttribute('aria-label',title);
+  const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
+  svg.setAttribute('viewBox','0 0 24 24');
+  svg.setAttribute('width','16');
+  svg.setAttribute('height','16');
+  svg.setAttribute('fill','none');
+  svg.setAttribute('stroke','currentColor');
+  svg.setAttribute('stroke-width','1.8');
+  svg.setAttribute('stroke-linecap','round');
+  svg.setAttribute('stroke-linejoin','round');
+  svg.setAttribute('aria-hidden','true');
+  const paths=kind==='split'
+    ? ['M12 3v18','M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z']
+    : ['M6 6h12v12H6z','M9 9l6 6','M15 9l-6 6'];
+  for(const d of paths){
+    const path=document.createElementNS('http://www.w3.org/2000/svg','path');
+    path.setAttribute('d',d);
+    svg.append(path);
+  }
+  button.append(svg);
+  return button;
+}
+
 function originForTab(url) {
   try { const site=new URL(url); return site.protocol === 'https:' ? site.origin : null; }
   catch { return null; }
@@ -99,7 +125,7 @@ function renderKeptSites(sites, busy, connected) {
 
 function renderWorkspaces(workspaces, busy, connected) {
   const signature = JSON.stringify(workspaces.map(w => [
-    w.name,w.initialized,w.available,w.poolSize,w.idleTabs,w.leasedTabs,w.sessions.map(s => [s.session_id,s.tab_title,s.tabId,s.tab_url]),
+    w.name,w.initialized,w.available,w.poolSize,w.idleTabs,w.leasedTabs,w.sessions.map(s => [s.session_id,s.tab_title,s.tabId,s.tab_url,s.designActive]),
   ])) + ':' + JSON.stringify(currentSites.map(site=>site.id)) + ':' + canControlSites + ':' + busy + ':' + connected;
   if (signature === lastSignature) return;
   lastSignature = signature;
@@ -148,8 +174,22 @@ function renderWorkspaces(workspaces, busy, connected) {
         if(!canControlSites) toggle.title='Update the running WebHelm daemon to manage Keep Alive sites';
         sessionRow.append(toggle);
       }
-      sessionRow.append(actionButton('Stop', busy || !connected,
-        () => showConfirmation('stop', {sessionId:session.session_id})));
+      if (session.tabId) {
+        const designButton=iconButton('split',
+          busy || !connected,async()=>{
+            try {
+              await rpc('workspace.control.design.toggle',{sessionId:session.session_id});
+              lastSignature='';
+              refresh();
+            } catch(error){el('message').textContent=error.message;}
+          },session.designActive
+          ? 'Exit Design Mode: restore ChatGPT tab'
+          : 'Design Mode: split Session with active ChatGPT thread',session.designActive);
+        sessionRow.append(designButton);
+      }
+      sessionRow.append(iconButton('stop', busy || !connected,
+        () => showConfirmation('stop', {sessionId:session.session_id}),
+        'Stop Session'));
       row.append(sessionRow);
     }
     target.append(row);

@@ -523,6 +523,9 @@ async function closeSessionOwned(s){
   s.poisoned=true; // Revoke delayed helpers after terminal close.
   let release_error=null;
   try {
+    // User's companion thread must leave the managed group before Session
+    // release returns this tab to the pool. Old extensions may lack the RPC.
+    await extensionCall(null,'workspace.control.design.closeSession',{sessionId:s.session_id}).catch(()=>{});
     const returnedTabs=s.leasedTabs.size;
     const closedChildTabs=s.targets.size - returnedTabs;
     await s.mutex.run(async()=>{
@@ -668,6 +671,10 @@ async function pollExtensionControl() {
   if (controlPollActive || shuttingDown) return;
   controlPollActive = true;
   try {
+    const designSessionIds=await extensionCall(null,'workspace.control.design.sessions').catch(()=>[]);
+    for (const id of Array.isArray(designSessionIds)?designSessionIds:[]) {
+      try { heartbeatSession(id); } catch { /* Session already ended */ }
+    }
     const pendingAction = await extensionCall(null,'workspace.control.poll',{sessions:visibleSessions(),queue:(await getQueueRegistry()).list().items});
     if (!pendingAction) return;
     const {id,action,sessionId} = pendingAction;

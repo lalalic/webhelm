@@ -6,7 +6,7 @@ function validateQueueUrl(url) {
   return parsed.href;
 }
 
-export function createControlRpc({control, manager, summarizeWorkspaces, scheduleBadge, chromeApi=globalThis.chrome ?? control.chrome}) {
+export function createControlRpc({control, manager, design=null, summarizeWorkspaces, scheduleBadge, chromeApi=globalThis.chrome ?? control.chrome}) {
   return async function controlRpc(method, args = {}) {
     switch (method) {
       case "workspace.control.status": {
@@ -18,13 +18,26 @@ export function createControlRpc({control, manager, summarizeWorkspaces, schedul
             if (!validTabId(session.tabId)) return session;
             try {
               const tab = await chromeApi.tabs.get(session.tabId);
-              return {...session, tab_title: tab.title || 'Untitled tab', tab_url:tab.url || ''};
+              return {...session, tab_title: tab.title || 'Untitled tab', tab_url:tab.url || '', designActive:design?.hasSession(session.session_id) || false};
             } catch { return {...session, tabId:null}; }
           })),
         })));
         return {...state,...summary,
           workspaces:workspaces.filter(workspace => workspace.showInMenu !== false),
           keptSites:chromeApi.storage?.local ? await sitesWithStatus(chromeApi) : []};
+      }
+      case "workspace.control.design.toggle": {
+        if (!design) throw Error("Design Mode unavailable");
+        return design.toggle(args.sessionId);
+      }
+      case "workspace.control.design.sessions": {
+        if (!design) return [];
+        await design.ready;
+        return design.activeSessionIds();
+      }
+      case "workspace.control.design.closeSession": {
+        if (!design) return {active:false};
+        return design.closeSession(args.sessionId);
       }
       case "workspace.control.activateTab": {
         const state = await control.status();

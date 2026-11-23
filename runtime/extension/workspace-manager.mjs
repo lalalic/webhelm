@@ -48,6 +48,10 @@ export class WorkspaceManager {
     this.inFlightTabIds = new Set();
     this.recentExtensionManagementByWindow = new Map();
     this.ownedTabIds = new Set();
+    // Companion tabs in Design Mode share the group only for Chrome Split View.
+    // They are never pooled, adopted, reclaimed or counted as capacity.
+    this.designCompanionTabIds = new Set();
+    this.designActiveGroupIds = new Set();
   }
 
   setOwnershipProvider(provider) {
@@ -86,6 +90,7 @@ export class WorkspaceManager {
       .map(Number).filter(Number.isInteger));
     const tabs = await this.groupTabs(group.id);
     const candidates = tabs.filter(tab => {
+      if (this.designCompanionTabIds.has(tab.id)) return false;
       const url = this.tabUrl(tab);
       const meta = this.parseManagedUrl(url);
       return url === 'about:blank' ||
@@ -114,7 +119,7 @@ export class WorkspaceManager {
       const current = await this.chrome.tabs.get(candidate.id).catch(() => null);
       const currentUrl = this.tabUrl(current);
       const currentMeta = this.parseManagedUrl(currentUrl);
-      const stillCandidate = current?.groupId === group.id && (currentUrl === 'about:blank' ||
+      const stillCandidate = !this.designCompanionTabIds.has(candidate.id) && current?.groupId === group.id && (currentUrl === 'about:blank' ||
         (currentMeta?.workspace === normalizedName && currentMeta.role === 'lease' && currentMeta.tabId === String(current.id)));
       const latestSessions = await this.getDaemonSessions();
       if (!Array.isArray(latestSessions)) continue;
@@ -337,7 +342,7 @@ export class WorkspaceManager {
     await this.chrome.tabs.group({ groupId, tabIds: [tabId] });
 
     const tabs = await this.groupTabs(groupId);
-    if (tabs.length > entry.poolSize) {
+    if (this.poolTabCount(tabs) > entry.poolSize) {
       const { idle } = this.classify(group.title, tabs);
       const removable = idle.find((candidate) => candidate.id !== tabId);
       if (removable) await this.chrome.tabs.remove(removable.id);
@@ -345,7 +350,7 @@ export class WorkspaceManager {
 
     await this.chrome.tabGroups.update(groupId, {
       title: group.title,
-      collapsed: true,
+      collapsed: !this.designActiveGroupIds.has(group.id),
     });
 
     return {
@@ -420,6 +425,7 @@ export class WorkspaceManager {
     }
 
     if (!inherited) {
+      if (this.designCompanionTabIds.has(tabId)) return { tabId, companion: true };
       if (this.isOwnedTab(tab)) return {
         tabId,
         owned: true,
@@ -450,7 +456,7 @@ export class WorkspaceManager {
     await this.chrome.tabs.group({ groupId: group.id, tabIds: [tabId] });
 
     const tabs = await this.groupTabs(group.id);
-    if (tabs.length > entry.poolSize) {
+    if (this.poolTabCount(tabs) > entry.poolSize) {
       const { idle } = this.classify(group.title, tabs);
       const removable = idle.find((candidate) => candidate.id !== tabId);
       if (removable) await this.chrome.tabs.remove(removable.id);
@@ -458,7 +464,7 @@ export class WorkspaceManager {
 
     await this.chrome.tabGroups.update(group.id, {
       title: group.title,
-      collapsed: true,
+      collapsed: !this.designActiveGroupIds.has(group.id),
     });
 
     const result = {
@@ -488,9 +494,12 @@ export class WorkspaceManager {
       tab.status !== "loading";
   }
 
+  poolTabCount(tabs) { return tabs.filter(tab => !this.designCompanionTabIds.has(tab.id)).length; }
+
   classify(name, tabs) {
     const idle = [], leased = [];
     for (const tab of tabs) {
+      if (this.designCompanionTabIds.has(tab.id)) continue;
       (this.isIdleWorkspaceTab(name, tab) ? idle : leased).push(tab);
     }
     return { idle, leased };
@@ -547,7 +556,7 @@ export class WorkspaceManager {
     })];
     for (const tab of created) this.markOwned(tab.id);
     const groupId = await this.chrome.tabs.group({ tabIds: created.map((tab) => tab.id) });
-    await this.chrome.tabGroups.update(groupId, { title: name, collapsed: true });
+    await this.chrome.tabGroups.update(groupId, { title: name, collapsed: !this.designActiveGroupIds.has(groupId) });
     await this.positionNewGroupLeftmost(groupId);
     for (const tab of created) await this.waitForIdleTab(tab.id, name);
     return await this.status(name);
@@ -569,7 +578,7 @@ export class WorkspaceManager {
     const group = await this.workspaceGroup(normalizedName);
     if (!group) return await this.createGroup(normalizedName, wanted);
 
-    await this.chrome.tabGroups.update(group.id, { title: normalizedName, collapsed: true });
+    await this.chrome.tabGroups.update(group.id, { title: normalizedName, collapsed: !this.designActiveGroupIds.has(group.id) });
     await this.reconcilePool(normalizedName, group.id, wanted);
     return await this.status(normalizedName);
   }
@@ -580,12 +589,12 @@ export class WorkspaceManager {
 
     // poolSize is a maximum concurrent capacity, not a target tab count.
     // Only remove surplus idle tabs when shrinking; never refill a lazy pool.
-    if (tabs.length > poolSize && idle.length) {
-      const removable = Math.min(idle.length, tabs.length - poolSize);
+    if (this.poolTabCount(tabs) > poolSize && idle.length) {
+      const removable = Math.min(idle.length, this.poolTabCount(tabs) - poolSize);
       await this.chrome.tabs.remove(idle.slice(0, removable).map((tab) => tab.id));
     }
 
-    await this.chrome.tabGroups.update(groupId, { title: name, collapsed: true });
+    await this.chrome.tabGroups.update(groupId, { title: name, collapsed: !this.designActiveGroupIds.has(groupId) });
   }
 
   async status(name) {
@@ -613,13 +622,13 @@ export class WorkspaceManager {
       poolSize: entry.poolSize,
       showInMenu: entry.showInMenu !== false,
       maxCapacity: entry.poolSize,
-      physicalTabs: tabs.length,
+      physicalTabs: this.poolTabCount(tabs),
       idle: idle.length,
       leased: leased.length,
-      tabIds: tabs.map((tab) => tab.id),
+      tabIds: tabs.filter(tab => !this.designCompanionTabIds.has(tab.id)).map((tab) => tab.id),
       idleTabIds: idle.map((tab) => tab.id),
       leasedTabIds: leased.map((tab) => tab.id),
-      tabs: tabs.map((tab) => ({
+      tabs: tabs.filter(tab => !this.designCompanionTabIds.has(tab.id)).map((tab) => ({
         tabId: tab.id,
         groupId: tab.groupId,
         title: tab.title || "",
@@ -750,7 +759,7 @@ export class WorkspaceManager {
       // Do not release the allocation fence while Chrome still exposes the
       // old idle URL. An overlapping allocation must not see this tab as free.
       updated = await this.waitForIdentityTab(tab.id, normalizedName);
-      await this.chrome.tabGroups.update(ready.groupId, { title: normalizedName, collapsed: true });
+      await this.chrome.tabGroups.update(ready.groupId, { title: normalizedName, collapsed: !this.designActiveGroupIds.has(ready.groupId) });
     } finally { this.inFlightTabIds.delete(tab.id); }
     return {
       workspace: normalizedName,
@@ -807,7 +816,7 @@ export class WorkspaceManager {
     this.inFlightTabIds.add(tab.id);
     try {
       const updated = await this.chrome.tabs.update(tab.id, { url: parsed.href, active: false });
-      await this.chrome.tabGroups.update(ready.groupId, { title: normalizedName, collapsed: true });
+      await this.chrome.tabGroups.update(ready.groupId, { title: normalizedName, collapsed: !this.designActiveGroupIds.has(ready.groupId) });
       return {
         workspace: normalizedName,
         groupId: ready.groupId,
@@ -829,7 +838,7 @@ export class WorkspaceManager {
       throw new Error(`Tab ${wanted} is not owned by workspace ${normalizedName}`);
     }
 
-    if (tabs.length > ready.poolSize) {
+    if (this.poolTabCount(tabs) > ready.poolSize) {
       await this.chrome.tabs.remove(wanted);
     } else {
       try {
@@ -852,7 +861,7 @@ export class WorkspaceManager {
         await this.chrome.tabs.remove(wanted);
       }
     }
-    await this.chrome.tabGroups.update(ready.groupId, { title: normalizedName, collapsed: true });
+    await this.chrome.tabGroups.update(ready.groupId, { title: normalizedName, collapsed: !this.designActiveGroupIds.has(ready.groupId) });
     return { workspace: normalizedName, tabId: wanted, released: true };
     });
   }
@@ -898,7 +907,7 @@ export class WorkspaceManager {
     }
 
     const tabs = await this.groupTabs(state.groupId);
-    if (tabs.length) await this.chrome.tabs.remove(tabs.map((tab) => tab.id));
+    if (tabs.length) await this.chrome.tabs.remove(tabs.filter(tab => !this.designCompanionTabIds.has(tab.id)).map((tab) => tab.id));
     await this.removeConfig(normalizedName);
     return { name: normalizedName, deleted: true };
   }
