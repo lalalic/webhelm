@@ -14,6 +14,16 @@ export function isChatThread(url) {
 function validId(id) { return Number.isSafeInteger(id) && id >= 0; }
 function isMissingTab(error) { return /No tab with id|Invalid tab ID|No window with id/i.test(String(error?.message || error)); }
 
+// Only pair the user's currently active ChatGPT conversation, never guess
+// among background or recently visited threads.
+export async function activeChatThread(chromeApi) {
+  const window = await chromeApi.windows.getLastFocused({windowTypes:['normal']});
+  if (!window || !validId(window.id)) return null;
+  const tabs = await chromeApi.tabs.query({windowId:window.id,active:true});
+  return tabs.find(tab => isChatThread(tab.url)) || null;
+}
+
+
 export class DesignMode {
   constructor(chromeApi, manager, control) {
     this.chrome = chromeApi;
@@ -40,6 +50,7 @@ export class DesignMode {
 
   hasSession(sessionId) { return this.records.has(sessionId); }
   activeSessionIds() { return [...this.records].filter(([,r]) => r.state === 'active').map(([id]) => id); }
+  allSessionIds() { return [...this.records.keys()]; }
 
   serialize(fn) {
     const result = this.serial.then(fn);
@@ -50,6 +61,18 @@ export class DesignMode {
   async toggle(sessionId) {
     await this.ready;
     return this.serialize(() => this.records.has(sessionId) ? this.disable(sessionId) : this.enable(sessionId));
+  }
+
+  async enableSession(sessionId) {
+    await this.ready;
+    return this.serialize(async () => {
+      const record=this.records.get(sessionId);
+      if(record) {
+        if(record.state!=='active') throw Error('Design Mode restore is pending; cannot enable');
+        return {active:true,sessionId,alreadyActive:true};
+      }
+      return this.enable(sessionId);
+    });
   }
 
   async enable(sessionId) {
@@ -66,16 +89,13 @@ export class DesignMode {
       throw Error('Agent tab is already in a Split View');
     if (agent.pinned) throw Error('Pinned Session tabs are not supported');
 
-    const allTabs = await this.chrome.tabs.query({});
+    const chat = await activeChatThread(this.chrome);
+    if (!chat) throw Error('Activate a ChatGPT conversation tab before enabling Design Mode');
     const leased = new Set(daemon.sessions.flatMap(s => Array.isArray(s.tabIds) ? s.tabIds : [s.tabId]));
-    const candidates = allTabs.filter(t => isChatThread(t.url) &&
-      !leased.has(t.id) && ![...this.records.values()].some(r => r.chatTabId === t.id) &&
-      (!validId(t.splitViewId) || t.splitViewId === -1) && !t.pinned);
-    if (!candidates.length) throw Error('Open a ChatGPT conversation tab in WebHelm Chrome first');
-    // Recent user activation wins; same-window location breaks ties.
-    candidates.sort((a,b) => (Number(b.lastAccessed)||0) - (Number(a.lastAccessed)||0) ||
-      Number(b.windowId === agent.windowId) - Number(a.windowId === agent.windowId));
-    const chat = candidates[0];
+    if (leased.has(chat.id) || [...this.records.values()].some(r => r.chatTabId === chat.id) ||
+        (validId(chat.splitViewId) && chat.splitViewId !== -1) || chat.pinned)
+      throw Error('Active ChatGPT tab is already owned, split or pinned');
+    const allTabs = await this.chrome.tabs.query({});
     const group = chat.groupId >= 0
       ? await this.chrome.tabGroups.get(chat.groupId).catch(() => null) : null;
     const agentGroup = await this.chrome.tabGroups.get(agent.groupId);

@@ -9,6 +9,7 @@ let lastSiteSignature = '';
 let currentSites = [];
 let refreshRunning = false;
 let canControlSites = false;
+let canEnableDesign = false;
 let currentQueue = [];
 let queueBusy = false;
 let queueConnected = false;
@@ -129,7 +130,7 @@ function renderKeptSites(sites, busy, connected) {
 function renderWorkspaces(workspaces, busy, connected) {
   const signature = JSON.stringify(workspaces.map(w => [
     w.name,w.initialized,w.available,w.poolSize,w.idleTabs,w.leasedTabs,w.sessions.map(s => [s.session_id,s.tab_title,s.tabId,s.tab_url,s.designActive]),
-  ])) + ':' + JSON.stringify(currentSites.map(site=>site.id)) + ':' + canControlSites + ':' + busy + ':' + connected;
+  ])) + ':' + JSON.stringify(currentSites.map(site=>site.id)) + ':' + canControlSites + ':' + canEnableDesign + ':' + busy + ':' + connected;
   if (signature === lastSignature) return;
   lastSignature = signature;
   const target = el('workspace-list');
@@ -178,7 +179,7 @@ function renderWorkspaces(workspaces, busy, connected) {
           : enabled ? 'Disable Keep Alive for this site' : 'Enable Keep Alive for this site',enabled);
         sessionRow.append(toggle);
       }
-      if (session.tabId) {
+      if (session.tabId && (session.designActive || canEnableDesign)) {
         const designButton=iconButton('split',
           busy || !connected,async()=>{
             try {
@@ -308,6 +309,7 @@ async function refresh() {
     el('daemon-status').className = `daemon-state ${state.connected ? 'online' : 'offline'}`;
     const busy = Boolean(state.request);
     canControlSites=Array.isArray(state.keptSites);
+    canEnableDesign=Boolean(state.canEnableDesign);
     currentSites=await readKeptSites(chrome,state.keptSites);
     renderKeptSites(currentSites,busy,state.connected);
     renderWorkspaces(await readMenuWorkspaces(chrome,state.workspaces || []),busy,state.connected);

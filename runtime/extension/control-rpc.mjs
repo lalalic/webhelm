@@ -1,3 +1,5 @@
+import {showSessionTab} from './workspace-summary.mjs';
+import {activeChatThread} from './design-mode.mjs';
 import {siteOrigin, sitePage, setKeptSite, listKeptSites, sitesWithStatus, reportKeptSite} from "./site-registry.mjs";
 function validTabId(tabId) { return Number.isSafeInteger(tabId) && tabId > 0; }
 function validateQueueUrl(url) {
@@ -14,15 +16,17 @@ export function createControlRpc({control, manager, design=null, summarizeWorksp
         const summary = summarizeWorkspaces((await manager.list()).workspaces, state.sessions);
         const workspaces = await Promise.all(summary.workspaces.map(async workspace => ({
           ...workspace,
-          sessions: await Promise.all(workspace.sessions.map(async session => {
+          sessions: (await Promise.all(workspace.sessions.map(async session => {
             if (!validTabId(session.tabId)) return session;
             try {
               const tab = await chromeApi.tabs.get(session.tabId);
               return {...session, tab_title: tab.title || 'Untitled tab', tab_url:tab.url || '', designActive:design?.hasSession(session.session_id) || false};
             } catch { return {...session, tabId:null}; }
-          })),
+          }))).filter(session => !validTabId(session.tabId) ||
+            showSessionTab(session.tab_url, chromeApi.runtime?.getURL?.('helm.html'))),
         })));
-        return {...state,...summary,
+        const activeChat = await activeChatThread(chromeApi).catch(()=>null);
+        return {...state,...summary,canEnableDesign:Boolean(activeChat),
           workspaces:workspaces.filter(workspace => workspace.showInMenu !== false),
           keptSites:chromeApi.storage?.local ? await sitesWithStatus(chromeApi) : []};
       }
@@ -30,10 +34,23 @@ export function createControlRpc({control, manager, design=null, summarizeWorksp
         if (!design) throw Error("Design Mode unavailable");
         return design.toggle(args.sessionId);
       }
+      case "workspace.control.design.enable": {
+        if (!design) throw Error("Design Mode unavailable");
+        return design.enableSession(args.sessionId);
+      }
+      case "workspace.control.design.disable": {
+        if (!design) throw Error("Design Mode unavailable");
+        return design.closeSession(args.sessionId);
+      }
       case "workspace.control.design.sessions": {
         if (!design) return [];
         await design.ready;
         return design.activeSessionIds();
+      }
+      case "workspace.control.design.records": {
+        if (!design) return [];
+        await design.ready;
+        return design.allSessionIds();
       }
       case "workspace.control.design.closeSession": {
         if (!design) return {active:false};

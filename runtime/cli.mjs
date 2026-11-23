@@ -74,7 +74,7 @@ async function requireCliSession(sessionId) {
 async function main(args = process.argv.slice(2)) {
   const [group, command] = args;
   if (!group || ['--help', '-h', 'help'].includes(group) || has(args, '--help') || has(args, '-h') ||
-      ((group === 'session' || group === 'platform') && (!command || command === 'help'))) {
+      ((group === 'session' || group === 'platform' || group === 'design') && (!command || command === 'help'))) {
     const topics = group === 'help'
       ? args.slice(1).filter(item => !['--help', '-h'].includes(item))
       : ['--help', '-h'].includes(group) ? [] : args.filter(item => !['--help', '-h', 'help'].includes(item));
@@ -133,6 +133,23 @@ async function main(args = process.argv.slice(2)) {
     // Never run a second in-process browser controller as a fallback: it may
     // reload an older daemon's Extension while its Sessions are still active.
     return emit(await request(payload));
+  }
+  if (group === 'design') {
+    if (command === 'status') return emit(await request({op:'design-status'}));
+    if (command === 'start') {
+      const url=arg(args,'--url');
+      if (!url) throw Error('design start requires --url URL; select a native reference site');
+      return emit(await request({op:'design-start',url}));
+    }
+    if (command === 'attach') {
+      await requireCliSession(args[2]);
+      return emit(await request({op:'design-attach',session_id:args[2]}));
+    }
+    if (command === 'stop') {
+      await requireCliSession(args[2]);
+      return emit(await request({op:'design-stop',session_id:args[2]}));
+    }
+    throw Error('unknown design command: '+String(command||''));
   }
   if (group === 'session') {
     if (command === 'start') return emit(await request({op:'start', workspace:CLI_WORKSPACE, url:arg(args,'--url')}));

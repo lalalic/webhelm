@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {ControlChannel} from '../../runtime/extension/control-channel.mjs';
-import {summarizeWorkspaces} from '../../runtime/extension/workspace-summary.mjs';
+import {summarizeWorkspaces,showSessionTab} from '../../runtime/extension/workspace-summary.mjs';
 import {createControlRpc} from '../../runtime/extension/control-rpc.mjs';
 
 const sessions = [
@@ -52,7 +52,7 @@ test('toolbar status resolves current tab titles, activates only an owned sessio
   const tabCalls=[];
   const chromeApi={
     tabs:{
-      async get(tabId){tabCalls.push(['get',tabId]);if(tabId===22)return {id:22,title:'Real ChatGPT Tab',windowId:3};throw Error('Missing tab');},
+      async get(tabId){tabCalls.push(['get',tabId]);if(tabId===22)return {id:22,title:'Real ChatGPT Tab',url:'https://chatgpt.com/c/a',windowId:3};throw Error('Missing tab');},
       async update(tabId,options){tabCalls.push(['update',tabId,options]);},
       async query(){return [];},
       async create(options){tabCalls.push(['create',options]);return {id:31,windowId:3};},
@@ -214,4 +214,36 @@ test('queue state relays through control storage; non-running entries are remova
   await channel.poll(sessions,[]);
   assert.deepEqual(await channel.requestQueueCancel('queued-1'),{ok:true,skipped:true});
   assert.equal((await channel.status()).request,null,'stale cancel must not create a command');
+});
+
+
+test('regression: idle and WebHelm management tabs never appear as user Sessions',async()=>{
+  const own='chrome-extension://kkkpgmhpoeceojalkpfdidffdfnlgdog/helm.html';
+  assert.equal(showSessionTab(own+'?workspace=WebHelm&role=idle',own),false);
+  assert.equal(showSessionTab(own+'?workspace=WebHelm&role=lease',own),false);
+  assert.equal(showSessionTab(own.replace('helm.html','popup.html'),own),false);
+  assert.equal(showSessionTab('about:blank',own),false);
+  assert.equal(showSessionTab('https://www.motionlex.online/#explore',own),true);
+  assert.equal(showSessionTab('chrome-extension://some-other-extension/example.html',own),true);
+  const {channel}=build();
+  const tabs=new Map([
+    [101,{title:'WebHelm · Idle',url:own+'?workspace=WebHelm&role=idle'}],
+    [102,{title:'WebHelm',url:own.replace('helm.html','popup.html')}],
+    [103,{title:'MotionLex',url:'https://www.motionlex.online/'}],
+  ]);
+  const chromeApi={runtime:{getURL:()=>own},tabs:{async get(id){return {id,...tabs.get(id)};}},
+    windows:{async getLastFocused(){return {id:1}}}};
+  const rpc=createControlRpc({control:channel,chromeApi,
+    manager:{async list(){return {workspaces:[{name:'WebHelm',initialized:true,poolSize:8,idle:1,leased:3}]};}},
+    summarizeWorkspaces,scheduleBadge(){}});
+  const rows=[
+    {session_id:'idle',workspace:'WebHelm',tabId:101},
+    {session_id:'test-popup',workspace:'WebHelm',tabId:102},
+    {session_id:'real',workspace:'WebHelm',tabId:103},
+  ];
+  await channel.poll(rows);
+  const result=await rpc('workspace.control.status');
+  assert.deepEqual(result.workspaces[0].sessions.map(s=>s.session_id),['real']);
+  assert.equal(result.totalSessions,3,'daemon ownership snapshot is unchanged');
+  assert.deepEqual(result.sessions,rows,'UI filtering must not mutate daemon Session data');
 });

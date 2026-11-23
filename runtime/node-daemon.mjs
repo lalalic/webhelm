@@ -456,6 +456,66 @@ async function createSession(req={}) {
   } finally { pendingSessionStarts--; }
 }
 
+// Agent-driven Design Mode uses the same Extension Split View operation as
+// the per-Session popup button. The daemon owns the Session and sends an
+// authoritative ownership snapshot before asking Chrome to split.
+async function enableDesignMode(s) {
+  await extensionCall(null,'workspace.control.heartbeat',{
+    sessions:visibleSessions(),queue:queueRegistry?.list().items||[],
+  });
+  return extensionCall(null,'workspace.control.design.enable',{sessionId:s.session_id});
+}
+
+function requireCliDesignSession(id) {
+  const s=sessions.get(id);
+  if(!s || s.workspace!=='WebHelm' || s.closing || s.poisoned)
+    throw Error('No active WebHelm Session: '+id);
+  return s;
+}
+
+async function startDesignMode(req) {
+  const raw=String(req.url||'');
+  let url;
+  try { url=new URL(raw); } catch { throw Error('Design Mode requires a valid site URL'); }
+  if(url.protocol!=='https:' && !(url.protocol==='http:' &&
+      ['localhost','127.0.0.1','[::1]'].includes(url.hostname)))
+    throw Error('Design Mode requires HTTPS (or local HTTP)');
+  const started=await createSession({workspace:'WebHelm',url:url.href});
+  const s=requireCliDesignSession(started.session_id);
+  s.designOwned=true;
+  s.designUrl=url.href;
+  try {
+    const split=await enableDesignMode(s);
+    return {...started,design_mode:true,split,site:url.href};
+  } catch(error) {
+    try { await stopSession(s.session_id); }
+    catch(cleanup) { throw Error(error.message+'; Session rollback failed: '+cleanup.message); }
+    throw error;
+  }
+}
+
+async function attachDesignMode(id) {
+  const s=requireCliDesignSession(id);
+  const split=await enableDesignMode(s);
+  return {session_id:id,design_mode:true,attached:true,split};
+}
+
+async function stopDesignMode(id) {
+  const s=requireCliDesignSession(id);
+  const split=await extensionCall(null,'workspace.control.design.disable',{sessionId:id});
+  if(!s.designOwned) return {session_id:id,design_mode:false,session_stopped:false,split};
+  const stopped=await stopSession(id);
+  return {session_id:id,design_mode:false,session_stopped:true,split,stopped};
+}
+
+async function designStatus() {
+  const ids=await extensionCall(null,'workspace.control.design.sessions');
+  const active=new Set(Array.isArray(ids)?ids:[]);
+  return {sessions:[...sessions.values()].filter(s=>s.workspace==='WebHelm'&&active.has(s.session_id))
+    .map(s=>({session_id:s.session_id,url:s.designUrl||null,created_by_design:!!s.designOwned,
+      last_used_at:s.last_used_at}))};
+}
+
 async function targetForUrl(url){for(let i=0;i<100;i++){const {targetInfos=[]}=await connectBrowser().then(b=>b.send('Target.getTargets'));const match=targetInfos.find(t=>t.type==='page'&&t.url===url);if(match)return match.targetId;await delay(50)}return null}
 async function extensionSupported() {
   const browser=await connectBrowser();
@@ -525,7 +585,11 @@ async function closeSessionOwned(s){
   try {
     // User's companion thread must leave the managed group before Session
     // release returns this tab to the pool. Old extensions may lack the RPC.
-    await extensionCall(null,'workspace.control.design.closeSession',{sessionId:s.session_id}).catch(()=>{});
+    if (s.workspaceSupported) {
+      const activeDesignIds=await extensionCall(null,'workspace.control.design.records');
+      if (Array.isArray(activeDesignIds) && activeDesignIds.includes(s.session_id))
+        await extensionCall(null,'workspace.control.design.closeSession',{sessionId:s.session_id});
+    }
     const returnedTabs=s.leasedTabs.size;
     const closedChildTabs=s.targets.size - returnedTabs;
     await s.mutex.run(async()=>{
@@ -799,7 +863,7 @@ export async function handle(req){
     setTimeout(()=>process.kill(process.pid,'SIGTERM'),150).unref();
     return {ok:true,stopping:true,pid:process.pid};
   }
-  case'ping':return {ok:true,pid:process.pid,version:PACKAGE_VERSION,queue_paused:process.env.WEBHELM_QUEUE_PAUSED==='1',session_count:sessions.size,managed_chrome:managedChrome||{profile_dir:PROFILE_DIR, endpoint:process.env.WEBHELM_CDP_URL||'http://127.0.0.1:9222',reused:true},chrome_guard:managedChromeGuard.status()};case'guard-check':{let status=await managedChromeGuard.tick();for(let retry=0;retry<6 && status.status!=='healthy' && !status.skipped;retry++){await delay(800);status=await managedChromeGuard.tick();}if(status.status!=='healthy' && !status.skipped)throw Error(`WebHelm Chrome health degraded: ${status.error||status.status}`);return {ok:true,chrome_guard:status};}case'heartbeat':return heartbeatSession(req.session_id);case'list':return {session_count:sessions.size,sessions:[...sessions.values()].map(s=>({session_id:s.session_id,workspace:s.workspace,target_id:s.targetId,last_used_at:s.last_used_at}))};case'start':return createSession(req);case'exec':return execute(req);case'stop':return stopSession(req.session_id);case'stop-all':return stopAllSessions();case'stop-workspace':{if(typeof req.workspace!=='string'||!req.workspace.trim())throw Error('workspace required');return stopWorkspaceSessions(req.workspace)}case'capacity':return workspaceCapacity(req);case'workspace-create':case'workspace-configure':case'workspace-resize':case'workspace-delete':return workspaceOp(req);case'queue-enqueue':return (await getQueueRegistry()).enqueue(req);case'queue-list':return (await getQueueRegistry()).list();case'queue-cancel':return (await getQueueRegistry()).cancel(req.queue_id);case'platform-run':return runPlatform(req);default:throw Error(`unknown op: ${req.op}`)}}
+  case'ping':return {ok:true,pid:process.pid,version:PACKAGE_VERSION,queue_paused:process.env.WEBHELM_QUEUE_PAUSED==='1',session_count:sessions.size,managed_chrome:managedChrome||{profile_dir:PROFILE_DIR, endpoint:process.env.WEBHELM_CDP_URL||'http://127.0.0.1:9222',reused:true},chrome_guard:managedChromeGuard.status()};case'guard-check':{let status=await managedChromeGuard.tick();for(let retry=0;retry<6 && status.status!=='healthy' && !status.skipped;retry++){await delay(800);status=await managedChromeGuard.tick();}if(status.status!=='healthy' && !status.skipped)throw Error(`WebHelm Chrome health degraded: ${status.error||status.status}`);return {ok:true,chrome_guard:status};}case'heartbeat':return heartbeatSession(req.session_id);case'list':return {session_count:sessions.size,sessions:[...sessions.values()].map(s=>({session_id:s.session_id,workspace:s.workspace,target_id:s.targetId,last_used_at:s.last_used_at}))};case'start':return createSession(req);case'exec':return execute(req);case'stop':return stopSession(req.session_id);case'stop-all':return stopAllSessions();case'stop-workspace':{if(typeof req.workspace!=='string'||!req.workspace.trim())throw Error('workspace required');return stopWorkspaceSessions(req.workspace)}case'capacity':return workspaceCapacity(req);case'workspace-create':case'workspace-configure':case'workspace-resize':case'workspace-delete':return workspaceOp(req);case'queue-enqueue':return (await getQueueRegistry()).enqueue(req);case'queue-list':return (await getQueueRegistry()).list();case'queue-cancel':return (await getQueueRegistry()).cancel(req.queue_id);case'design-start':return startDesignMode(req);case'design-attach':return attachDesignMode(req.session_id);case'design-stop':return stopDesignMode(req.session_id);case'design-status':return designStatus();case'platform-run':return runPlatform(req);default:throw Error(`unknown op: ${req.op}`)}}
 export function serve(conn) {
   let buffer = '', dispatched = false;
   conn.on('error',()=>{ /* A disconnected client must not crash the daemon. */ });

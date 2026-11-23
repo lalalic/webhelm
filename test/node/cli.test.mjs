@@ -95,7 +95,8 @@ test('retired migrate CLI is unavailable and absent from help',()=>{
 test('every supported CLI command has detailed side-effect-free help',()=>{
   const topics = [
     'help','setup','status','ensure','capacity','session','session start',
-    'session list','session exec','session heartbeat','session stop','platform',
+    'session list','session exec','session heartbeat','session stop','design',
+    'design start','design attach','design status','design stop','platform',
     'platform list','platform profile','platform source','platform run',
     'platform sync','platform publish',
   ];

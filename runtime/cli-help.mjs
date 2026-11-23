@@ -20,6 +20,10 @@ Commands:
   webhelm session exec ID [--code-file F]  Run JavaScript in a Session
   webhelm session heartbeat ID            Keep a Session alive during idle waits
   webhelm session stop ID|--all           Stop a Session or explicitly stop all CLI Sessions
+  webhelm design start --url URL          Open reference site with native ChatGPT Split View
+  webhelm design attach ID                Split an existing CLI Session
+  webhelm design status                   Show active Design Mode Sessions
+  webhelm design stop ID                  Unsplit; stop only Design-created Sessions
   webhelm platform list                   List installed website integrations
   webhelm platform profile NAME           Inspect a site's supported fields
   webhelm platform source NAME ACTION     Read the source of an installed Action
@@ -88,6 +92,68 @@ Output: JSON capacity information.
 
 Example:
   webhelm capacity`,
+  design: `webhelm design — share one native site with the active ChatGPT thread
+
+Usage:
+  webhelm design <start|attach|status|stop> [options]
+
+Start creates one managed WebHelm Session and pairs it with an existing
+ChatGPT thread Tab in Chrome Split View; attach reuses an existing Session.
+The Extension automatically tracks and protects the companion ChatGPT tab.
+Sessions in Design Mode are heartbeat-renewed by the daemon.
+Stopping Design Mode restores the original ChatGPT tab layout; a Session
+created with design start is also stopped.
+
+Examples:
+  webhelm design start --url https://mobbin.com/
+  webhelm design attach SESSION_ID
+  webhelm design status
+  webhelm design stop SESSION_ID`,
+  'design start': `webhelm design start — open the selected design reference site and split with ChatGPT
+
+Usage:
+  webhelm design start --url HTTPS_URL
+
+The native reference URL is selected by the Agent using
+skills/webhelm/references/design-mode.md. Requires an existing ChatGPT
+conversation tab in WebHelm managed Chrome (Chrome 155+).
+No screenshot, iframe aggregator, or duplicate ChatGPT tab is created.
+If no suitable thread exists, the new Session is rolled back.
+
+Example:
+  webhelm design start --url https://www.motionlex.online/`,
+  'design attach': `webhelm design attach — enable Design Mode on an existing Session
+
+Usage:
+  webhelm design attach SESSION_ID
+
+Preserves Session identity and existing site state; opens native Split View.
+Repeated calls are idempotent.
+
+Example:
+  webhelm design attach SESSION_ID`,
+  'design status': `webhelm design status — list shared Design Mode Sessions
+
+Usage:
+  webhelm design status
+
+Returns JSON with current session_id, original site URL (when known),
+ownership, and heartbeat time. No browser navigation or Session creation.
+
+Example:
+  webhelm design status`,
+  'design stop': `webhelm design stop — end native Split View
+
+Usage:
+  webhelm design stop SESSION_ID
+
+Restores the companion ChatGPT Tab to its original window/group/index.
+Only Sessions created with design start are also stopped; attached Sessions
+return to ordinary Session lifecycle.
+A Session stopped or garbage-collected independently also auto-unsplits.
+
+Example:
+  webhelm design stop SESSION_ID`,
   session: `webhelm session — manage persistent JavaScript browser Sessions
 
 Usage:
@@ -305,7 +371,7 @@ Example:
 export const helpTopics = Object.freeze(Object.keys(sections).filter(Boolean));
 export function cliHelp(topics=[]) {
   const parts = topics.filter(Boolean);
-  const key = parts.length>1 && ['session','platform'].includes(parts[0])
+  const key = parts.length>1 && ['session','platform','design'].includes(parts[0])
     ? parts.slice(0,2).join(' ') : (parts[0] || '');
   if (!Object.hasOwn(sections,key)) throw Error(`unknown help topic: ${parts.join(' ')}`);
   return sections[key];

@@ -5,7 +5,7 @@ description: Use when a task needs real Google Chrome browser control (websites,
 
 # WebHelm
 
-Use WebHelm to work in the user's managed Chrome, including already signed-in sites. Choose an installed platform Action when it supports the user goal; otherwise use a browser Session. Do not create a Session just because a platform exists. **CLI `--help` is authoritative** for syntax and options; do not guess flags.
+Use WebHelm to work in the user's managed Chrome, including already signed-in sites. For native-site visual collaboration on web, iPhone/app UI or video, read [Design Mode](references/design-mode.md) before opening a Session. Choose an installed platform Action when it supports the user goal; otherwise use a browser Session. Do not create a Session just because a platform exists. **CLI `--help` is authoritative** for syntax and options; do not guess flags.
 
 ## Initial setup (one time)
 
@@ -40,6 +40,22 @@ The shell trap releases your Session even if `exec` fails. The Session's JavaScr
 - **Tabs/media:** `new_tab`, `current_tab`, `list_tabs`, `switch_tab`, `close_tab`, `capture_screenshot`, `wait`.
 
 Helpers are asynchronous; use `await`. Obtain element references from `snapshot()` and refresh them after navigation. Open tabs with `new_tab` instead of raw CDP target creation. During long waits without browser operations, call `webhelm session heartbeat SESSION_ID` at least every 60 seconds.
+
+## Design Mode (shared native site + current ChatGPT thread)
+
+For requests such as **"design mode with app UI"**, **"design mode with iPhone app"**,
+**"design mode with web"**, or **"design mode with video"**: first read
+[Design Mode reference](references/design-mode.md). Choose a native reference
+site, then use `webhelm design start --url URL`, or `webhelm design attach ID`
+for an already owned Session. Use `webhelm design status` to reuse a running
+collaboration, and `webhelm design stop ID` only when the discussion ends.
+
+The user's **current active tab must be a ChatGPT thread** in the same Chrome
+Profile. If not, ask them to activate it; never silently select an unrelated
+background thread. Existing splits may still be exited. While Design Mode is
+active, the daemon renews its Session; expired/stopped/GC Sessions automatically
+unsplit before release. This is an exception to the one-shot start/stop pattern
+above: **keep one Session open for the entire design discussion**.
 
 ## Platform Actions and on-demand references
 

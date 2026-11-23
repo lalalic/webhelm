@@ -1,3 +1,17 @@
+// A managed idle/lease marker or an Extension management page is not a
+// user-facing browser Session. Keep the daemon-owned Session record unchanged;
+// this filters only the toolbar's presentation.
+export function showSessionTab(url, extensionUrl) {
+  try {
+    const page = new URL(url);
+    if (page.protocol === 'about:' && page.pathname === 'blank') return false;
+    const ownOrigin = extensionUrl ? new URL(extensionUrl).origin : null;
+    if (ownOrigin && page.origin === ownOrigin &&
+        ['/helm.html', '/workspace.html', '/popup.html'].includes(page.pathname)) return false;
+    return true;
+  } catch { return false; }
+}
+
 export function summarizeWorkspaces(workspaces, sessions = []) {
   if (!Array.isArray(workspaces)) throw new Error('Workspace list is invalid');
   const configured = workspaces.map(workspace => ({

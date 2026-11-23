@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {DesignMode,isChatThread} from '../../runtime/extension/design-mode.mjs';
+import {DesignMode,isChatThread,activeChatThread} from '../../runtime/extension/design-mode.mjs';
 import {WorkspaceManager} from '../../runtime/extension/workspace-manager.mjs';
 
 function mockChrome({crossWindow=false,chatUrl='https://chatgpt.com/c/6b01e2f1-d7f4-83e9-a409-bcef3a6ef801'}={}) {
@@ -17,9 +17,13 @@ function mockChrome({crossWindow=false,chatUrl='https://chatgpt.com/c/6b01e2f1-d
     {id:12,index:crossWindow?1:2,windowId:crossWindow?2:1,groupId:-1,pinned:false,
       url:'https://example.com/',title:'Other',lastAccessed:10,splitViewId:-1},
   ];
-  let lastSplitCalls=0;
+  let lastSplitCalls=0, focusedWindow=crossWindow?2:1;
+  tabs.find(t=>t.id===11).active=true;
   const methods={
-    query:async(query={})=>tabs.filter(t=>query.groupId===undefined||t.groupId===query.groupId).map(t=>({...t})),
+    query:async(query={})=>tabs.filter(t=>
+      (query.groupId===undefined||t.groupId===query.groupId) &&
+      (query.windowId===undefined||t.windowId===query.windowId) &&
+      (query.active===undefined||Boolean(t.active)===query.active)).map(t=>({...t})),
     get:async(id)=>{const t=tabs.find(x=>x.id===id);if(!t)throw Error('No tab with id: '+id);return {...t}},
     create:async(props)=>{const t={id:nextId++,index:tabs.length,windowId:props.windowId??1,groupId:-1,pinned:false,url:props.url,splitViewId:-1};tabs.push(t);return {...t}},
     move:async(id,p)=>{const t=tabs.find(x=>x.id===id);t.windowId=p.windowId??t.windowId;t.index=p.index;return {...t}},
@@ -29,7 +33,11 @@ function mockChrome({crossWindow=false,chatUrl='https://chatgpt.com/c/6b01e2f1-d
       return id;
     },
     ungroup:async(ids)=>{for(const id of ids)tabs.find(x=>x.id===id).groupId=-1},
-    update:async(id,props)=>{Object.assign(tabs.find(x=>x.id===id),props)},
+    update:async(id,props)=>{
+      const current=tabs.find(x=>x.id===id);
+      if(props.active) for(const t of tabs)if(t.windowId===current.windowId)t.active=false;
+      Object.assign(current,props);
+    },
     createSplit:async([left,right])=>{
       const a=tabs.find(t=>t.id===left),b=tabs.find(t=>t.id===right);
       assert.equal(a.windowId,b.windowId);assert.equal(a.groupId,b.groupId);assert.equal(a.index+1,b.index);
@@ -46,7 +54,8 @@ function mockChrome({crossWindow=false,chatUrl='https://chatgpt.com/c/6b01e2f1-d
     },
     windows:{
       get:async(id)=>({id}),
-      update:async()=>{},
+      getLastFocused:async()=>({id:focusedWindow}),
+      update:async(id)=>{focusedWindow=id;},
     },
     storage:{
       session:{get:async key=>({[key]:sessionState[key]}),set:async x=>Object.assign(sessionState,x)},
@@ -58,7 +67,12 @@ function mockChrome({crossWindow=false,chatUrl='https://chatgpt.com/c/6b01e2f1-d
   const control={status:async()=>({
     connected:true,sessions:[{session_id:'s1',tabId:10,tabIds:[10],workspace:'WebHelm'}],
   })};
-  return {chrome,manager,control,tabs,groups,sessionState,splitCalls:()=>lastSplitCalls};
+  return {chrome,manager,control,tabs,groups,sessionState,splitCalls:()=>lastSplitCalls,
+    activate(id) {
+      const tab=tabs.find(t=>t.id===id);
+      for(const t of tabs)if(t.windowId===tab.windowId)t.active=false;
+      tab.active=true;focusedWindow=tab.windowId;
+    }};
 }
 
 test('recognizes actual ChatGPT thread pages, not homepage or shares',()=>{
@@ -102,7 +116,7 @@ test('cross-window thread moves to Session window and back',async()=>{
 test('does not create a ChatGPT thread if none is open',async()=>{
   const m=mockChrome({chatUrl:'https://chatgpt.com/'});
   const mode=new DesignMode(m.chrome,m.manager,m.control);
-  await assert.rejects(()=>mode.toggle('s1'),/Open a ChatGPT conversation/);
+  await assert.rejects(()=>mode.toggle('s1'),/Activate a ChatGPT conversation/);
   assert.equal(m.splitCalls(),0);
   assert.equal(m.manager.designCompanionTabIds.size,0);
 });
@@ -128,4 +142,24 @@ test('design state is per Session, not a global Chrome mode',async()=>{
   assert.equal(mode.hasSession('s1'),true);
   assert.equal(mode.hasSession('unrelated'),false);
   await mode.toggle('s1');
+});
+
+test('refuses a background ChatGPT thread when the active tab is not ChatGPT',async()=>{
+  const m=mockChrome();
+  const mode=new DesignMode(m.chrome,m.manager,m.control);
+  m.activate(12);
+  assert.equal(await activeChatThread(m.chrome),null);
+  await assert.rejects(()=>mode.enableSession('s1'),/Activate a ChatGPT conversation/);
+  assert.equal(m.splitCalls(),0);
+  assert.equal(m.manager.designCompanionTabIds.size,0);
+});
+
+test('exit remains available when another tab becomes active',async()=>{
+  const m=mockChrome();
+  const mode=new DesignMode(m.chrome,m.manager,m.control);
+  await mode.enableSession('s1');
+  m.activate(12);
+  assert.equal(await activeChatThread(m.chrome),null);
+  assert.equal((await mode.closeSession('s1')).restored,true);
+  assert.equal(m.tabs.find(t=>t.id===11).splitViewId,-1);
 });
