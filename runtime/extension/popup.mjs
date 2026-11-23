@@ -46,7 +46,8 @@ function actionButton(label, disabled, onClick, className = '') {
 }
 
 function iconButton(kind, disabled, onClick, title, active = false) {
-  const button = actionButton('', disabled, onClick, 'icon-button' + (active?' design-active':''));
+  const activeClass = active ? (kind === 'keepalive' ? ' site-enabled' : ' design-active') : '';
+  const button = actionButton('', disabled, onClick, 'icon-button' + activeClass);
   button.title=title;
   button.setAttribute('aria-label',title);
   const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
@@ -61,7 +62,9 @@ function iconButton(kind, disabled, onClick, title, active = false) {
   svg.setAttribute('aria-hidden','true');
   const paths=kind==='split'
     ? ['M12 3v18','M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z']
-    : ['M6 6h12v12H6z','M9 9l6 6','M15 9l-6 6'];
+    : kind==='keepalive'
+      ? ['M22 12h-4l-3 9L9 3l-3 9H2']
+      : ['M6 6h12v12H6z','M9 9l6 6','M15 9l-6 6'];
   for(const d of paths){
     const path=document.createElementNS('http://www.w3.org/2000/svg','path');
     path.setAttribute('d',d);
@@ -165,13 +168,14 @@ function renderWorkspaces(workspaces, busy, connected) {
       sessionRow.append(details);
       if (workspace.name === 'WebHelm' && siteId) {
         const enabled=currentSites.some(site=>site.id===siteId);
-        const toggle=actionButton(enabled?'On':'Keep Alive',busy||!connected||!canControlSites,async()=>{
+        const toggle=iconButton('keepalive',busy||!connected||!canControlSites,async()=>{
           try {
             await rpc('workspace.control.site.toggle',{sessionId:session.session_id,enabled:!enabled});
             lastSignature='';refresh();
           } catch(error){el('message').textContent=error.message;}
-        },enabled?'site-enabled':'');
-        if(!canControlSites) toggle.title='Update the running WebHelm daemon to manage Keep Alive sites';
+        },!canControlSites
+          ? 'Update the running WebHelm daemon to manage Keep Alive sites'
+          : enabled ? 'Disable Keep Alive for this site' : 'Enable Keep Alive for this site',enabled);
         sessionRow.append(toggle);
       }
       if (session.tabId) {
