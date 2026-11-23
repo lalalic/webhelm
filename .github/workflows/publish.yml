@@ -39,11 +39,9 @@ jobs:
 
       - run: npm ci --no-audit --no-fund
 
-      - name: Verify with shared Agents Relay bounded-test action
+      - name: Verify WebHelm test suite (bounded)
         timeout-minutes: 10
-        uses: lalalic/agents-relay/.github/actions/run-bounded-tests@main
-        with:
-          command: npm test
+        run: npm test
 
       - name: Resolve next unused npm version
         id: version
