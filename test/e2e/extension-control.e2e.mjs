@@ -31,6 +31,25 @@ keep_alive:
 `);
 fs.writeFileSync(path.join(mockPlatform,'actions','_heartbeat.mjs'),
   `export default async function heartbeat(){return {status:'login_required'};}\n`);
+// Exercise the generic Queue IPC and real SQLite store without making a
+// real ChatGPT submission. The isolated queue scheduler is paused.
+const mockChat=path.join(mockPlatforms,'chatgpt');
+fs.mkdirSync(path.join(mockChat,'actions'),{recursive:true});
+fs.mkdirSync(path.join(mockChat,'queues'),{recursive:true});
+fs.writeFileSync(path.join(mockChat,'manifest.yaml'),`platform: chatgpt
+actions:
+  new-turn: actions/_new_turn.mjs
+  validate-new-turn-ready: actions/_validate_new_turn_ready.mjs
+`);
+fs.writeFileSync(path.join(mockChat,'actions/_new_turn.mjs'),
+  "export async function run(){throw Error('isolated paused queue must never send');}");
+fs.writeFileSync(path.join(mockChat,'actions/_validate_new_turn_ready.mjs'),
+  "export async function run(){return false;}");
+fs.writeFileSync(path.join(mockChat,'queues/new-turn.mjs'),`export default {
+  action:'new-turn',validate:'validate-new-turn-ready',
+  group:c=>c.thread_id,title:c=>String(c.message).split('\\n',1)[0],
+  url:c=>'https://chatgpt.com/c/'+encodeURIComponent(c.thread_id)
+};`);
 const port=await new Promise((resolve,reject)=>{
   const server=net.createServer();server.once('error',reject);
   server.listen(0,'127.0.0.1',()=>{const p=server.address().port;server.close(()=>resolve(p));});
@@ -41,7 +60,7 @@ const env={...process.env,WEBHELM_CONFIG_ROOT:path.join(root,'config'),
   WEBHELM_LOCK:path.join(root,'runtime','session-node.lock'),
   WEBHELM_CDP_URL:`http://127.0.0.1:${port}`,
   WEBHELM_EXTENSION_HOME:extension.path,
-  WEBHELM_CHATGPT_QUEUE_PAUSED:'1',
+  WEBHELM_QUEUE_PAUSED:'1',
   WEBHELM_PLATFORM_DIR:mockPlatforms,WEBHELM_SITE_HEARTBEAT_POLL_MS:'1000'};
 const browserPath=process.env.WEBHELM_TEST_CHROME || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const chrome=spawn(browserPath,[
@@ -372,7 +391,8 @@ try {
   assert.equal(activated,true);
   console.log('SESSION TITLE ACTIVATION PASS');
 
-  const receipt=await request({op:'chatgpt-new-turn-enqueue',config:{
+  assert.equal((await request({op:'ping'})).queue_paused,true);
+  const receipt=await request({op:'queue-enqueue',platform:'chatgpt',queue:'new-turn',config:{
     thread_id:'webhelm-e2e-title-test',message:'Review this draft\nprivate next line',idempotency_key:'webhelm-e2e-title-entry',mergeable:true,
   }});
   assert.equal(receipt.ok,true);
@@ -390,20 +410,20 @@ try {
       titleWeight:title?getComputedStyle(title).fontWeight:null,
     }})()`)
     .then(row=>row.title==='Review this draft'&&row.remove==='×'?row:null), 'compact queue row with icon button');
-  assert.equal(queueDisplayed.heading,'ChatGPT Queue');
+  assert.equal(queueDisplayed.heading,'chatgpt Queue');
   assert.equal(queueDisplayed.threadId,'webhelm-e2e-title-test');
   assert.match(queueDisplayed.threadHref,/^https:\/\/chatgpt.com\/c\/webhelm-e2e-title-test$/);
   assert.equal(queueDisplayed.titleTag,'SPAN','request title is plain text, not a link or button');
   assert.equal(queueDisplayed.titleWeight,'400','request title is not bold');
   assert.equal(queueDisplayed.queueVisible,true);
-  assert.match(queueDisplayed.removeLabel,/Remove Review this draft from queue/);
+  assert.match(queueDisplayed.removeLabel,/Cancel Review this draft/);
   assert.ok(queueDisplayed.titleSize<=10,'queue title smaller than workspace session title');
   assert.ok(queueDisplayed.detailSize<=9,'queue state text stays compact');
   assert.ok(queueDisplayed.removeWidth<=22,'remove uses a compact icon button');
   // A large real durable backlog must be compact by thread rather than
   // obscuring the Keep Alive sites or encouraging bulk cancellation.
   for(let i=0;i<12;i++) {
-    const queued=await request({op:'chatgpt-new-turn-enqueue',config:{
+    const queued=await request({op:'queue-enqueue',platform:'chatgpt',queue:'new-turn',config:{
       thread_id:'webhelm-e2e-same-thread-backlog',message:`Pending turn ${i}`,
       idempotency_key:`webhelm-e2e-pending-${i}`,
     }});

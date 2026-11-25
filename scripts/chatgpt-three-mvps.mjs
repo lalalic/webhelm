@@ -170,11 +170,13 @@ try {
   // A queue receipt can persist before its browser Session has fully returned to idle.
   // Allow the daemon's awaited cleanup to finish without touching unrelated Sessions.
   for(let i=0;i<45;i++) {
-    const remaining=(await sessions()).filter(x=>!existing.has(x.session_id));
+    const remaining=(await sessions()).filter(x=>x.workspace==='WebHelm'&&!existing.has(x.session_id));
     if(!remaining.length) break;
     await sleep(1000);
   }
-  const leftovers=(await sessions()).filter(x=>!existing.has(x.session_id));
+  // Only the shared WebHelm workspace owns these test leases. Application
+  // workspaces (e.g. WeChat) may independently start during the gate.
+  const leftovers=(await sessions()).filter(x=>x.workspace==='WebHelm'&&!existing.has(x.session_id));
   assert.equal(leftovers.length,0,'owned Sessions not cleaned: '+JSON.stringify(leftovers));
   evidence.pass=true;
   record('ALL_3_MVPS_PASS',{thread_url:evidence.thread_url,real_browser:true,
