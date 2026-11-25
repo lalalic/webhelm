@@ -74,7 +74,7 @@ async function requireCliSession(sessionId) {
 async function main(args = process.argv.slice(2)) {
   const [group, command] = args;
   if (!group || ['--help', '-h', 'help'].includes(group) || has(args, '--help') || has(args, '-h') ||
-      ((group === 'session' || group === 'platform' || group === 'design') && (!command || command === 'help'))) {
+      ((group === 'session' || group === 'platform' || group === 'design' || group === 'demo') && (!command || command === 'help'))) {
     const topics = group === 'help'
       ? args.slice(1).filter(item => !['--help', '-h'].includes(item))
       : ['--help', '-h'].includes(group) ? [] : args.filter(item => !['--help', '-h', 'help'].includes(item));
@@ -176,6 +176,37 @@ async function main(args = process.argv.slice(2)) {
       if (!result.ok) process.exitCode = 1;
       return;
     }
+  }
+  if (group === 'demo') {
+    const sessionId = command;
+    const demoCommand = args[2];
+    const valueOptions={step:['--title'],spotlight:['--ref','--label','--text'],annotate:['--ref','--label','--text'],
+      caption:['--text'],say:['--text'],cursor:['--ref','--label'],highlight:['--ref','--label'],wait:['--ms'],
+      clear:[],pause:[],resume:[],status:[],start_recording:['--output-dir','--fps'],
+      stop_recording:['--output-dir','--markcut']};
+    const allowed=valueOptions[demoCommand];
+    if(!allowed)throw Error(`unknown Demo command: ${String(demoCommand||'')}`);
+    const booleanOptions=demoCommand==='stop_recording'?['--render','--no-render','--no-voice']:[];
+    for(let index=3;index<args.length;index++){
+      const option=args[index];
+      if(allowed.includes(option)){
+        const value=args[++index];
+        if(!value||value.startsWith('--'))throw Error(`${option} requires a value`);
+      }else if(!booleanOptions.includes(option))throw Error(`unsupported ${demoCommand} option: ${option}`);
+    }
+    if(has(args,'--render')&&has(args,'--no-render'))throw Error('Choose --render or --no-render, not both');
+    await requireCliSession(sessionId);
+    const option = name => arg(args, name);
+    return emit(await request({
+      op:'demo', session_id:sessionId, command:demoCommand,
+      arguments:{
+        title:option('--title'), text:option('--text'), ref:option('--ref'),
+        label:option('--label'), ms:option('--ms') === undefined ? undefined : Number(option('--ms')),
+      },
+      output_dir:option('--output-dir'), markcut:option('--markcut'),
+      render:has(args,'--render') || !has(args,'--no-render'), voice:!has(args,'--no-voice'),
+      fps:option('--fps') === undefined ? undefined : Number(option('--fps')),
+    }));
   }
   if (group === 'platform') {
     rejectWorkspaceOverride(args);

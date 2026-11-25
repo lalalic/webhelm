@@ -1,0 +1,28 @@
+{
+  "protocol": "webhelm.demo/1",
+  "reproduce": {
+    "command": "WEBHELM_DEMO_EVIDENCE_DIR=/tmp/webhelm-demo-evidence node test/e2e/demo-engine.e2e.mjs",
+    "fixture": "The E2E starts a deterministic HTTP fixture on 127.0.0.1 with one Preferences button and an incrementing counter.",
+    "browser": "Uses the existing managed Chrome endpoint, creates two temporary WebHelm Session targets, and closes both in cleanup.",
+    "output": "Writes capture.mp4, timeline.json, Markcut sources/render, sanitized hashes and evidence under /tmp/webhelm-demo-evidence."
+  },
+  "walkthrough": [
+    "Navigate both owned Sessions to the local fixture.",
+    "Start recording before Demo events.",
+    "Add a numbered step, perform a real click with WebHelm's click helper, and refresh snapshot refs.",
+    "Apply spotlight, annotation tooltip, cursor, caption, say narration and highlight to the current snapshot ref.",
+    "Wait for the required visible effects, pause, assert that a Demo event is rejected, resume, then clear the overlay.",
+    "Stop and render through Markcut; verify completed status, timeline duration, media metadata, narration bounds, and the second Session's unchanged fixture state.",
+    "Inspect the extracted representative capture frames and verify owned Session targets are released."
+  ],
+  "verification": [
+    "ffprobe capture.mp4: H.264/yuv420p, positive duration, achieved frame rate measured from output",
+    "markcut verify markcut/video.md and Markcut render",
+    "ffprobe markcut/video.mp4: valid H.264 video and AAC audio when narration is enabled",
+    "assert every timeline event and visible cursor/highlight effect fits inside capture duration",
+    "assert the spoken audio asset starts at the say event time and ends within capture duration",
+    "inspect extracted frames at the step, spotlight, annotation, caption and final playback times",
+    "assert target DOM is unchanged by Demo overlays and second Session state remains unchanged",
+    "verify no owned temporary tab remains and Demo Session count is zero"
+  ]
+}

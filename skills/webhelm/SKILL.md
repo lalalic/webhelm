@@ -41,6 +41,15 @@ The shell trap releases your Session even if `exec` fails. The Session's JavaScr
 
 Helpers are asynchronous; use `await`. Obtain element references from `snapshot()` and refresh them after navigation. Open tabs with `new_tab` instead of raw CDP target creation. During long waits without browser operations, call `webhelm session heartbeat SESSION_ID` at least every 60 seconds.
 
+## Demo recording
+
+Use `webhelm demo SESSION_ID COMMAND ...` on an already-owned Session for
+iPhoneHelm-compatible annotated demos. Start capture with an empty output
+directory before Demo events, perform real navigation/click helper actions,
+then stop and supply Markcut for verification/render. The command emits JSON
+and never decorates the target DOM. `webhelm demo --help` is authoritative;
+source-checkout `docs/demo-engine.md` documents limits, artifacts, and cleanup.
+
 ## Design Mode (shared native site + current ChatGPT thread)
 
 For requests such as **"design mode with app UI"**, **"design mode with iPhone app"**,

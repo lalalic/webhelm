@@ -15,6 +15,8 @@ import { ensureManagedChrome } from './chrome.mjs';
 import { ensureExtensionLoaded } from './extension-manager.mjs';
 import { createManagedChromeGuard } from './managed-chrome-guard.mjs';
 import { PROFILE_DIR, RUNTIME_DIR, assertProfileConsistency } from './config-paths.mjs';
+import { DemoCapture, requireMediaCommands } from './demo-capture.mjs';
+import { DemoEngine } from './demo-engine.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PACKAGE_VERSION=JSON.parse(fs.readFileSync(new URL('../package.json',import.meta.url),'utf8')).version;
@@ -267,7 +269,7 @@ function makeHelpers(s){
   async fill_input(selector,text){if(!await h.wait_for_element(selector))throw Error(`element not found: ${selector}`);return evaluate(s,`(()=>{const e=document.querySelector(${JSON.stringify(selector)});const set=Object.getOwnPropertyDescriptor(Object.getPrototypeOf(e),'value')?.set;if(set)set.call(e,${JSON.stringify(String(text))});else e.textContent=${JSON.stringify(String(text))};e.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:${JSON.stringify(String(text))}}));e.dispatchEvent(new Event('change',{bubbles:true}));return true})()`)},
   async click(selector){if(!await h.wait_for_element(selector))throw Error(`element not found: ${selector}`);return evaluate(s,`(()=>{const e=document.querySelector(${JSON.stringify(selector)});e.click();return true})()`)},
   async capture_screenshot(pathname){const b=await connectBrowser();if(s.poisoned || s.closing)throw Error('Session execution expired or closing');const data=await b.send('Page.captureScreenshot',{format:'png'},sidFor(s));if(s.poisoned || s.closing)throw Error('Session execution expired or closing');if(pathname)fs.writeFileSync(pathname,Buffer.from(data.data,'base64'));return data.data},
-  async snapshot(interactive_only=false){const result=await evaluate(s,`(()=>{let n=0;const xs=[...document.querySelectorAll('button,a,input,textarea,select,[role],[tabindex]')].filter(e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width&&r.height&&s.visibility!=='hidden'&&s.display!=='none'});return xs.map(e=>{const id='e'+(++n);e.setAttribute('data-ref',id);const role=e.getAttribute('role')||({BUTTON:'button',A:'link',INPUT:'textbox',TEXTAREA:'textbox',SELECT:'combobox'}[e.tagName]||e.tagName.toLowerCase());const name=e.getAttribute('aria-label')||e.innerText||e.value||e.placeholder||'';return '- '+role+' '+JSON.stringify(name.trim().slice(0,100))+' [ref='+id+']'}).join('\\n')})()`);return result||''},
+  async snapshot(interactive_only=false){const generation=++s.snapshotGeneration;s.snapshotTargetId=s.targetId;const sessionId=JSON.stringify(s.session_id);const result=await evaluate(s,`(()=>{let n=0;const generation=${JSON.stringify(generation)},sessionId=${sessionId};const xs=[...document.querySelectorAll('button,a,input,textarea,select,[role],[tabindex]')].filter(e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width&&r.height&&s.visibility!=='hidden'&&s.display!=='none'});return xs.map(e=>{const id='d'+sessionId+'-'+generation+'-e'+(++n);e.setAttribute('data-ref',id);const role=e.getAttribute('role')||({BUTTON:'button',A:'link',INPUT:'textbox',TEXTAREA:'textbox',SELECT:'combobox'}[e.tagName]||e.tagName.toLowerCase());const name=e.getAttribute('aria-label')||e.innerText||e.value||e.placeholder||'';return '- '+role+' '+JSON.stringify(name.trim().slice(0,100))+' [ref='+id+']'}).join('\\n')})()`);return result||''},
   async workspace_status(){return extensionCall(s,'workspace.status',{name:s.workspace})},
   async workspace_capacity(){const r=await h.workspace_status();const idle=Array.isArray(r.idleTabIds)?r.idleTabIds.length:null,leased=Array.isArray(r.leasedTabIds)?r.leasedTabIds.length:null;return {name:r.name,poolSize:r.poolSize??null,maxCapacity:r.maxCapacity??r.poolSize??null,physicalTabs:r.physicalTabs??(idle!==null&&leased!==null?idle+leased:null),idle,leased,available:Number.isInteger(r.maxCapacity??r.poolSize)&&leased!==null?Math.max(0,(r.maxCapacity??r.poolSize)-leased):null}} ,
   async workspace_list(){return extensionCall(s,'workspace.list')},
@@ -321,6 +323,161 @@ function makeHelpers(s){
  Object.defineProperty(h,'target_id',{get:()=>s.targetId});
  Object.defineProperty(h,'targetId',{get:()=>s.targetId});
  return h;
+}
+
+function demoTransport(s) {
+  return {
+    get viewport() { return s.demoViewport || { width: 0, height: 0 }; },
+    get snapshotGeneration() { return s.snapshotGeneration || 0; },
+    get snapshotTargetId() { return s.snapshotTargetId; },
+    get captureDiagnostics() { return { events:s.demoCaptureEventCount||0, lastOwner:s.demoCaptureLastOwner||null }; },
+    async evaluate(expression, targetId) { return evaluate(s, expression, targetId || s.targetId); },
+    async inspectViewport() {
+      const viewport = await evaluate(s, '({width:window.innerWidth,height:window.innerHeight,devicePixelRatio:window.devicePixelRatio})', s.targetId);
+      if (!Number.isInteger(viewport?.width) || viewport.width <= 0 ||
+          !Number.isInteger(viewport?.height) || viewport.height <= 0) {
+        throw Error('Demo viewport is unavailable');
+      }
+      s.demoViewport = viewport;
+      return viewport;
+    },
+    async startCapture(onFrame) {
+      const browser = await connectBrowser();
+      const sessionId = sidFor(s, s.targetId);
+      await browser.send('Target.activateTarget', { targetId: s.targetId });
+      await browser.send('Page.bringToFront', {}, sessionId);
+      const disposer = browser.on('Page.screencastFrame', (params, owner) => {
+        s.demoCaptureEventCount=(s.demoCaptureEventCount||0)+1;
+        s.demoCaptureLastOwner=owner||null;
+        if (owner !== sessionId) return;
+        onFrame({ data: params.data, width: params.metadata?.deviceWidth, height: params.metadata?.deviceHeight });
+        browser.send('Page.screencastFrameAck', { sessionId: params.sessionId }, sessionId).catch(() => {});
+      });
+      s.demoCaptureDisposer = disposer;
+      try {
+        await browser.send('Page.startScreencast', {
+          format: 'jpeg', everyNthFrame: 1, maxWidth: 1280, maxHeight: 720,
+        }, sessionId);
+        // Request a compositor paint so the live screencast emits its first frame; only screencast events are encoded.
+        await browser.send('Page.captureScreenshot', { format: 'jpeg', quality: 80 }, sessionId);
+      } catch(error) {
+        s.demoCaptureDisposer = null;
+        disposer();
+        throw error;
+      }
+    },
+    async stopCapture() {
+      const disposer = s.demoCaptureDisposer;
+      s.demoCaptureDisposer = null;
+      disposer?.();
+      const browser = await connectBrowser();
+      await browser.send('Page.stopScreencast', {}, sidFor(s, s.targetId)).catch(() => {});
+    },
+  };
+}
+
+function activeDemoEngine(s) {
+  const engine = s.demoEngine;
+  if (!engine) throw Error('Demo Engine is not initialized for this Session');
+  return engine;
+}
+
+function integerOption(value, name, minimum, maximum) {
+  if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+    throw Error(`${name} requires an integer ${minimum}..${maximum}`);
+  }
+  return value;
+}
+
+function requiredPathOption(value, name) {
+  if (typeof value !== 'string' || !value.trim()) throw Error(`${name} requires a nonempty path`);
+  return path.resolve(value);
+}
+
+async function demoRequest(req) {
+  const s = sessions.get(req.session_id);
+  if (!s || s.closing || s.poisoned) throw Error(`unknown session_id: ${req.session_id} (missing or closing)`);
+  if (s.workspace !== 'WebHelm') throw Error('Demo Engine supports WebHelm CLI-owned Sessions only');
+  s.inFlight++;
+  try {
+    return await s.mutex.run(async() => {
+      if (s.closing || s.poisoned) throw Error('session closing or expired');
+      s.last_used_at = Date.now();
+      const demoCommand = String(req.command || '');
+      if (String(req.command || '') === 'start_recording') {
+        requiredPathOption(req.output_dir, 'start_recording output_dir');
+        integerOption(req.fps === undefined ? 15 : req.fps, 'fps', 1, 30);
+        await requireMediaCommands();
+      }
+      if (demoCommand === 'start_recording') {
+        const outputDir = requiredPathOption(req.output_dir, 'start_recording output_dir');
+        let outputStats=null;
+        try { outputStats=fs.lstatSync(outputDir); }
+        catch(error) { if(error.code!=='ENOENT')throw error; }
+        if (outputStats?.isSymbolicLink()) throw Error('Capture output directory must not be a symbolic link');
+        if (!outputStats) fs.mkdirSync(outputDir, { recursive: true, mode: 0o700 });
+        else if (!outputStats.isDirectory()) throw Error(`Capture output path is not a directory: ${outputDir}`);
+        else if (fs.readdirSync(outputDir).length) throw Error(`Capture output already exists: ${outputDir}`);
+        fs.chmodSync(outputDir, 0o700);
+      }
+      if (demoCommand === 'stop_recording') {
+        const outputDir = requiredPathOption(req.output_dir, 'stop_recording output_dir');
+        if (outputDir !== s.demoOutputDir) throw Error('stop_recording output_dir must match start_recording output_dir');
+        if (!s.demoCapture) throw Error('Demo capture unavailable; recording cannot honestly produce video');
+        requiredPathOption(req.markcut, 'markcut');
+      }
+      if (!s.demoEngine) {
+        const transport = demoTransport(s);
+        s.demoViewport = await transport.inspectViewport();
+        s.demoEngine = new DemoEngine(s, transport);
+      }
+      const engine = activeDemoEngine(s);
+      if (engine.state?.recording && s.targetId !== engine.targetId) {
+        throw Error('Demo recording owns the tab active at start; stop it before switching tabs');
+      }
+      engine.targetId = s.targetId;
+      const previousEngine = activeDemoEngine(s);
+      const result = req.command === 'start_recording' ? null : await previousEngine.execute(demoCommand, req.arguments || {});
+      if (req.command === 'start_recording') {
+        const outputDir = requiredPathOption(req.output_dir, 'start_recording output_dir');
+        const capture = new DemoCapture(engine.transport, outputDir, integerOption(req.fps === undefined ? 15 : req.fps, 'fps', 1, 30));
+        try {
+          await capture.start();
+          const started = await engine.execute(demoCommand, req.arguments || {});
+          s.demoCapture = capture;
+          s.demoOutputDir = outputDir;
+          started.capture_started = true;
+          return started;
+        } catch(error) {
+          previousEngine.dispose();
+          await capture.dispose().catch(() => {});
+          throw error;
+        }
+      }
+      if (req.command === 'stop_recording') {
+        const outputDir = requiredPathOption(req.output_dir, 'stop_recording output_dir');
+        const capture = s.demoCapture;
+        try {
+          const exported = await capture.stop({
+            destination: outputDir,
+            timeline: result,
+            markcut: req.markcut,
+            render: req.render === true,
+            voice: req.voice !== false,
+            fps: integerOption(req.fps === undefined ? 15 : req.fps, 'fps', 1, 30),
+            markcut: requiredPathOption(req.markcut, 'markcut'),
+          });
+          result.video_recorded = true;
+          result.export = exported;
+        } finally {
+          await capture.dispose();
+          s.demoCapture = null;
+          s.demoOutputDir = null;
+        }
+      }
+      return result;
+    });
+  } finally { s.inFlight--; s.last_used_at = Date.now(); }
 }
 const EXTENSION_ID='kkkpgmhpoeceojalkpfdidffdfnlgdog';
 const EXTENSION_PREFIX=`chrome-extension://${EXTENSION_ID}/`;
@@ -421,7 +578,7 @@ async function createSession(req={}) {
   const s={session_id:sid, workspace:req.workspace||await defaultWorkspaceName(), targetId:null,
     rootTargetId:null, workspaceSupported:false,targets:new Set(), attachments:new Map(), eventDisposers:new Map(),
     leasedTabs:new Map(), idleUrls:new Map(), mutex:new Mutex(), events:[], namespace:null,context:null,
-    inFlight:0, pendingEffects:0, closing:false, poisoned:false, last_used_at:Date.now()};
+    inFlight:0, pendingEffects:0, closing:false, poisoned:false, last_used_at:Date.now(), snapshotGeneration:0, snapshotTargetId:null};
   let targetId,lease;
   try {
     if(await extensionSupported()) {
@@ -595,6 +752,13 @@ async function closeSessionOwned(s){
     const returnedTabs=s.leasedTabs.size;
     const closedChildTabs=s.targets.size - returnedTabs;
     await s.mutex.run(async()=>{
+      try {
+        await s.demoCapture?.dispose();
+        s.demoCaptureDisposer?.();
+        s.demoEngine?.dispose();
+      } finally {
+        s.demoCapture=null;s.demoCaptureDisposer=null;s.demoEngine=null;s.demoOutputDir=null;
+      }
       const browser=await connectBrowser();
       // Return managed tabs to their original Extension pool; keep their CDP targets.
       for(const tid of [...s.targets]){
@@ -734,7 +898,7 @@ function visibleSessions() {
   }));
 }
 async function pollExtensionControl() {
-  if (controlPollActive || shuttingDown) return;
+  if (controlPollActive || shuttingDown || process.env.WEBHELM_NO_PROFILE_EXTENSION_PROBE === '1') return;
   controlPollActive = true;
   try {
     // Extension records are authoritative only on successful contact. A
@@ -876,7 +1040,7 @@ export async function handle(req){
     setTimeout(()=>process.kill(process.pid,'SIGTERM'),150).unref();
     return {ok:true,stopping:true,pid:process.pid};
   }
-  case'ping':return {ok:true,pid:process.pid,version:PACKAGE_VERSION,queue_paused:process.env.WEBHELM_QUEUE_PAUSED==='1',session_count:sessions.size,managed_chrome:managedChrome||{profile_dir:PROFILE_DIR, endpoint:process.env.WEBHELM_CDP_URL||'http://127.0.0.1:9222',reused:true},chrome_guard:managedChromeGuard.status()};case'guard-check':{let status=await managedChromeGuard.tick();for(let retry=0;retry<6 && status.status!=='healthy' && !status.skipped;retry++){await delay(800);status=await managedChromeGuard.tick();}if(status.status!=='healthy' && !status.skipped)throw Error(`WebHelm Chrome health degraded: ${status.error||status.status}`);return {ok:true,chrome_guard:status};}case'heartbeat':return heartbeatSession(req.session_id);case'list':return {session_count:sessions.size,sessions:[...sessions.values()].map(s=>({session_id:s.session_id,workspace:s.workspace,target_id:s.targetId,last_used_at:s.last_used_at}))};case'start':return createSession(req);case'exec':return execute(req);case'stop':return stopSession(req.session_id);case'stop-all':return stopAllSessions();case'stop-workspace':{if(typeof req.workspace!=='string'||!req.workspace.trim())throw Error('workspace required');return stopWorkspaceSessions(req.workspace)}case'capacity':return workspaceCapacity(req);case'workspace-create':case'workspace-configure':case'workspace-resize':case'workspace-delete':return workspaceOp(req);case'queue-enqueue':return (await getQueueRegistry()).enqueue(req);case'queue-list':return (await getQueueRegistry()).list();case'queue-cancel':return (await getQueueRegistry()).cancel(req.queue_id);case'design-start':return startDesignMode(req);case'design-attach':return attachDesignMode(req.session_id);case'design-stop':return stopDesignMode(req.session_id);case'design-status':return designStatus();case'platform-run':return runPlatform(req);default:throw Error(`unknown op: ${req.op}`)}}
+  case'ping':return {ok:true,pid:process.pid,version:PACKAGE_VERSION,queue_paused:process.env.WEBHELM_QUEUE_PAUSED==='1',session_count:sessions.size,managed_chrome:managedChrome||{profile_dir:PROFILE_DIR, endpoint:process.env.WEBHELM_CDP_URL||'http://127.0.0.1:9222',reused:true},chrome_guard:managedChromeGuard.status()};case'guard-check':{let status=await managedChromeGuard.tick();for(let retry=0;retry<6 && status.status!=='healthy' && !status.skipped;retry++){await delay(800);status=await managedChromeGuard.tick();}if(status.status!=='healthy' && !status.skipped)throw Error(`WebHelm Chrome health degraded: ${status.error||status.status}`);return {ok:true,chrome_guard:status};}case'heartbeat':return heartbeatSession(req.session_id);case'list':return {session_count:sessions.size,sessions:[...sessions.values()].map(s=>({session_id:s.session_id,workspace:s.workspace,target_id:s.targetId,last_used_at:s.last_used_at}))};case'start':return createSession(req);case'exec':return execute(req);case'stop':return stopSession(req.session_id);case'stop-all':return stopAllSessions();case'stop-workspace':{if(typeof req.workspace!=='string'||!req.workspace.trim())throw Error('workspace required');return stopWorkspaceSessions(req.workspace)}case'capacity':return workspaceCapacity(req);case'workspace-create':case'workspace-configure':case'workspace-resize':case'workspace-delete':return workspaceOp(req);case'queue-enqueue':return (await getQueueRegistry()).enqueue(req);case'queue-list':return (await getQueueRegistry()).list();case'queue-cancel':return (await getQueueRegistry()).cancel(req.queue_id);case'design-start':return startDesignMode(req);case'design-attach':return attachDesignMode(req.session_id);case'design-stop':return stopDesignMode(req.session_id);case'design-status':return designStatus();case'demo':return demoRequest(req);case'platform-run':return runPlatform(req);default:throw Error(`unknown op: ${req.op}`)}}
 export function serve(conn) {
   let buffer = '', dispatched = false;
   conn.on('error',()=>{ /* A disconnected client must not crash the daemon. */ });
