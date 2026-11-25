@@ -7,6 +7,7 @@ import vm from 'node:vm';
 import crypto from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { invokePlatformAction } from './platforms.mjs';
+import { observeNetwork } from './network-observer.mjs';
 import {createSiteKeepaliveScheduler} from './site-keepalive.mjs';
 import { PlatformQueueRegistry } from './queue-registry.mjs';
 import { idleUrlFromIdentity, sameIdleUrl, staleSession, withinDeadline, SessionDeadlineError, endedDesignSessions } from './session-lifecycle.mjs';
@@ -206,7 +207,7 @@ async function attach(s,targetId,b=null){b ||= await connectBrowser();const {ses
 function sidFor(s,targetId=s.targetId){const sid=s.attachments.get(targetId);if(!sid)throw new Error(`target ${targetId} is not attached to this session`);return sid}
 async function evaluate(s,expression,targetId=s.targetId,awaitPromise=true){if(s.poisoned || s.closing)throw Error('Session execution expired or closing');if(!s.targets.has(targetId))throw Error('cannot evaluate a target outside the active WebHelm session');const b=await connectBrowser();if(s.poisoned || s.closing)throw Error('Session execution expired or closing');const r=await b.send('Runtime.evaluate',{expression,returnByValue:true,awaitPromise,userGesture:true},sidFor(s,targetId));if(r.exceptionDetails)throw new Error(r.exceptionDetails.exception?.description||r.exceptionDetails.text);return r.result?.value}
 async function cdp(s,method,params={},targetId=s.targetId){if(s.poisoned || s.closing)throw Error('Session execution expired or closing');if(method==='Target.createTarget')throw Error('Target.createTarget is disabled; use new_tab(url)');if(method==='Target.attachToTarget'||method==='Target.detachFromTarget')throw Error('direct target attachment changes are disabled in WebHelm sessions');if(['Target.closeTarget','Target.activateTarget'].includes(method)&&!s.targets.has(params.targetId))throw Error('cannot operate on a tab outside the active WebHelm session');return connectBrowser().then(browser=>{if(s.poisoned || s.closing)throw Error('Session execution expired or closing');if(method.startsWith('Target.')||method.startsWith('Browser.')||method.startsWith('ServiceWorker.'))return browser.send(method,params);return browser.send(method,params,sidFor(s,targetId));})}
-function makeHelpers(s){
+function makeHelpers(s, observers=null){
  const h={
   js:(expression,target_id)=>evaluate(s,expression,target_id||s.targetId),
   cdp:(method,params={})=>cdp(s,method,params),
@@ -298,6 +299,18 @@ function makeHelpers(s){
     if (!s.targets.has(tid)) throw Error('cannot activate a tab outside the active WebHelm session');
     return cdp(s,'Target.activateTarget',{targetId:tid});
   },
+  // Available only to Platform Actions; the runner always closes observers.
+  async observe_network(options){
+    if(!observers||observers.closed)throw Error('observe_network requires an active Platform Action');
+    const target=s.targetId, browser=await connectBrowser();
+    if(observers.closed||s.closing||s.poisoned||target!==s.targetId)throw Error('network observer target unavailable');
+    const attachment=sidFor(s,target);
+    await browser.send('Network.enable',{maxTotalBufferSize:16000000,maxResourceBufferSize:2000000,maxPostDataSize:32768},attachment);
+    if(observers.closed||s.closing||s.poisoned||target!==s.targetId)throw Error('network observer target unavailable');
+    const observer=observeNetwork(browser,attachment,options);
+    observers.items.add(observer);
+    return observer;
+  },
   events(){const e=s.events.splice(0);return e},
   async current_url(){return (await h.page_info()).url},
   async title(){return (await h.page_info()).title}
@@ -306,7 +319,7 @@ function makeHelpers(s){
  // A rejected async VM execution does not cancel browser operations it
  // already started. Keep their tab ownership until those operations settle.
  const effectHelpers=new Set(['js','cdp','goto_url','new_tab','close_tab','fill_input',
-   'click','capture_screenshot','snapshot','type_text','upload_file','switch_tab','activate_tab']);
+   'click','capture_screenshot','snapshot','type_text','upload_file','switch_tab','activate_tab','observe_network']);
  for(const [name,helper] of Object.entries(h)){
    if(typeof helper!=='function')continue;
    h[name]=(...args)=>{
@@ -816,7 +829,8 @@ async function runPlatform(req) {
     result=await session.mutex.run(async()=>{
       if(session.poisoned||session.closing)throw Error('Session expired while waiting for platform action');
       const logs=[];
-      const helpers=makeHelpers(session);
+      const observers={closed:false,items:new Set()};
+      const helpers=makeHelpers(session,observers);
       try {
         const actionTimeoutMs=Math.max(50,Math.min(300000,Number(process.env.WEBHELM_PLATFORM_TIMEOUT_MS)||180000));
         const value=await withinDeadline(Promise.resolve().then(()=>invokePlatformAction(platform,action,{
@@ -830,7 +844,7 @@ async function runPlatform(req) {
       } catch(error) {
         if(error instanceof SessionDeadlineError)session.poisoned=true;
         return {ok:false,stdout:logs.join('\n').slice(-40000),stderr:'',error:`${error.name}: ${error.message}`};
-      }
+      } finally { observers.closed=true;for(const observer of observers.items)observer.close(); observers.items.clear(); }
     });
   } finally {
     session.inFlight--;session.last_used_at=Date.now();
