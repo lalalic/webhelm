@@ -220,8 +220,8 @@ try {
   }
   await cdp('Target.closeTarget',{targetId:maliciousPage});
 
-  const main=await request({op:'start'});
-  const custom=await request({op:'start',workspace:'Custom'});
+  const main=await request({op:'start',url:'data:text/html,%3Ctitle%3EWebHelm%20test%3C%2Ftitle%3E'});
+  const custom=await request({op:'start',workspace:'Custom',url:'data:text/html,%3Ctitle%3ECustom%20test%3C%2Ftitle%3E'});
   assert.equal(main.workspace,'WebHelm');
   assert.equal(custom.workspace,'Custom');
   const runCli=(...args)=>spawnSync(process.execPath,[path.join(repo,'runtime/cli.mjs'),...args],{
@@ -257,7 +257,7 @@ try {
       hasEmptyQueueText:document.body.innerText.includes('No queue entries'),
       height:document.body.scrollHeight,
     })`);
-    return v?.daemon==='Online' && v.groups.length===2?v:null;
+    return v?.daemon==='Online' && v.groups.length===2 && v.groups.every(group=>/1 session$/.test(group.stats))?v:null;
   },'two-group popup');
   assert.equal(displayed.shownVersion,`v${RUNTIME_VERSION}`,'popup must show the published Runtime version');
   assert.equal(displayed.manifestVersion,RUNTIME_VERSION,'Extension must match the published Runtime version');
@@ -315,11 +315,11 @@ try {
   },'Custom Session HTTPS navigation');
   await assert.rejects(rpc(workerSid,'workspace.control.site.toggle',{sessionId:custom.session_id,enabled:true}),
     /only from a WebHelm Session/);
-  await waitFor(async()=>evaluate(popupSid,`(()=>{const sections=[...document.querySelectorAll('.workspace-row')];const custom=sections.find(r=>r.querySelector('.workspace-title strong')?.textContent==='Custom');return custom && ![...custom.querySelectorAll('.session-row button')].some(b=>b.textContent==='Keep Alive'||b.textContent==='On')})()`),
+  await waitFor(async()=>evaluate(popupSid,`(()=>{const sections=[...document.querySelectorAll('.workspace-row')];const custom=sections.find(r=>r.querySelector('.workspace-title strong')?.textContent==='Custom');return custom && ![...custom.querySelectorAll('.session-row button')].some(b=>/Keep Alive/.test(b.getAttribute('aria-label')||''))})()`),
     'Custom workspace has no Keep Alive toggle');
-  await waitFor(async()=>evaluate(popupSid,`[...document.querySelectorAll('.session-row button')].some(button=>button.textContent==='Keep Alive')`),
+  await waitFor(async()=>evaluate(popupSid,`[...document.querySelectorAll('.session-row button')].some(button=>button.getAttribute('aria-label')==='Enable Keep Alive for this site')`),
     'site Keep Alive button on leased tab');
-  await evaluate(popupSid,`[...document.querySelectorAll('.session-row button')].find(button=>button.textContent==='Keep Alive').click()`);
+  await evaluate(popupSid,`[...document.querySelectorAll('.session-row button')].find(button=>button.getAttribute('aria-label')==='Enable Keep Alive for this site').click()`);
   const siteAdded=await waitFor(async()=>{
     const state=await rpc(workerSid,'workspace.control.status');
     return state.keptSites.find(site=>site.id===registeredOrigin);
@@ -332,7 +332,7 @@ try {
     return state.keptSites.find(entry=>entry.id===registeredOrigin && entry.status==='login_required') || null;
   },'platform heartbeat reports login required');
   assert.equal(loginRequired.platform,'e2e-platform');
-  const compact=await waitFor(async()=>evaluate(popupSid,`(()=>{const row=document.querySelector('.keepalive-row'),dot=row?.querySelector('.keepalive-status'),label=row?.querySelector('.keepalive-name'),remove=row?.querySelector('.keepalive-remove[aria-label^="Remove "]');return dot?.dataset.status==='inactive'&&label&&remove?{rowHeight:row.getBoundingClientRect().height,dotColor:getComputedStyle(dot).backgroundColor,greenLabel:label.classList.contains('is-logged-in'),removeLabel:remove.getAttribute('aria-label'),text:row.innerText,children:row.children.length}:null})()`),
+  const compact=await waitFor(async()=>evaluate(popupSid,`(()=>{const row=document.querySelector('.keepalive-row'),dot=row?.querySelector('.keepalive-status'),label=row?.querySelector('.keepalive-name'),remove=row?.querySelector('.keepalive-remove[aria-label^="Remove "]');return dot?.dataset.status==='inactive'&&label&&remove&&row.children.length===4?{rowHeight:row.getBoundingClientRect().height,dotColor:getComputedStyle(dot).backgroundColor,greenLabel:label.classList.contains('is-logged-in'),removeLabel:remove.getAttribute('aria-label'),text:row.innerText,children:row.children.length}:null})()`),
     'compact gray login-required site row');
   assert.ok(compact.rowHeight <= 32,'one-line site row stays compact');
   assert.equal(compact.children,4,'paused row includes explicit resume control');
