@@ -834,7 +834,7 @@ async function runPlatform(req) {
     });
   } finally {
     session.inFlight--;session.last_used_at=Date.now();
-    cleanup=auto ? await stopSession(sid).catch(e=>({release_error:e.message})) : {caller_owned_session:true};
+    cleanup=auto ? await stopSession(sid).catch(e=>({session_id:sid,release_error:e.message})) : {caller_owned_session:true};
   }
   result.cleanup=cleanup;
   // Action completion/receipt semantics belong to the Platform, not this runner.
@@ -855,10 +855,18 @@ const siteKeepalive = createSiteKeepaliveScheduler({
     const capacity=await workspaceCapacity();
     return Number.isInteger(capacity.available) && capacity.available > 0;
   },
+  recover:async sid => {
+    const session=sessions.get(sid);
+    if (!session) return true;
+    if (session.closing) return false;
+    await stopSession(sid);
+    return !sessions.has(sid);
+  },
   run:async plan => {
     const outcome=await runPlatform({platform:plan.platform,action:plan.action,
       url:plan.url,auto_session:true,config:{}});
-    if (!outcome.result.ok || outcome.result.cleanup?.release_error) throw Error('Platform heartbeat action failed or session not released');
+    if (outcome.result.cleanup?.release_error) return {status:'release_error',releaseSessionId:outcome.result.cleanup.session_id};
+    if (!outcome.result.ok) throw Error('Platform heartbeat action failed');
     return outcome.result.value;
   },
 });

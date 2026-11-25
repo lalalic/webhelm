@@ -37,21 +37,32 @@ export function resolveSiteHeartbeat(site, names=listPlatforms, manifestFor=plat
   return null;
 }
 
+// Login expiry is terminal until a new registration revision is requested.
+// Unknown results and transient failures back off rather than accelerating.
 export function createSiteKeepaliveScheduler({listSites, report, run, resolve=resolveSiteHeartbeat,
-  now=Date.now, canRun=async()=>true}) {
+  now=Date.now, canRun=async()=>true, recover=async()=>true}) {
   const next = new Map();
+  const cleanup = new Map();
   let active = false;
   return {
     async tick() {
       if (active) return {busy:true};
       active=true;
       try {
+        // Retry only the old Session's release, never the failed Action.
+        for (const [id, pending] of cleanup) {
+          if (now() < pending.at) continue;
+          pending.at=now()+60000;
+          try { if (await recover(pending.sessionId)) cleanup.delete(id); } catch {}
+        }
         const sites=await listSites();
         const known=new Set(sites.map(s=>s.id));
         for (const id of next.keys()) if (!known.has(id)) next.delete(id);
         for (const site of sites) {
-          const nextCheck=next.get(site.id);
-          if (nextCheck && nextCheck.revision === site.revision && now() < nextCheck.at) continue;
+          if (cleanup.has(site.id)) continue;
+          const previous=next.get(site.id);
+          const current=previous?.revision === site.revision ? previous : null;
+          if (site.paused || current?.paused || (current && now() < current.at)) continue;
           let plan;
           try {plan = resolve(site);} catch {plan=null; }
           if (!plan) {
@@ -60,17 +71,22 @@ export function createSiteKeepaliveScheduler({listSites, report, run, resolve=re
             continue;
           }
           if (!await canRun()) return {deferred:true};
-          // Set deadline before running to prevent concurrent retries during
-          // slow site actions. No automatic replay of timed-out actions.
           next.set(site.id,{at:now()+plan.intervalMs,revision:site.revision});
-          let status='error';
+          let status='error', releaseSessionId;
           try {
             const result=await run({...plan,site});
-            status=['alive','login_required','unknown'].includes(result?.status)?result.status:'unknown';
+            releaseSessionId=result?.releaseSessionId;
+            status=['alive','login_required','unknown','release_error'].includes(result?.status)?result.status:'unknown';
           } catch { /* No secret URLs, cookies, or Action traces in the popup. */ }
-          if (status !== 'alive') next.set(site.id,{at:now()+Math.min(plan.intervalMs,5*60000),revision:site.revision});
-          await report({id:site.id,revision:site.revision,platform:plan.platform,status});
-          return {id:site.id,status}; // At most one site check per scheduler tick.
+          const failures=status==='error'||status==='unknown' ?
+            (current?.failures ?? site.failures ?? 0)+1 : 0;
+          const paused=status==='login_required'||status==='release_error'||failures>=3;
+          if (status==='release_error' && releaseSessionId)
+            cleanup.set(site.id,{sessionId:releaseSessionId,at:now()+60000});
+          next.set(site.id,{at:now()+Math.min(MAX_INTERVAL_MINUTES*60000,plan.intervalMs*2**Math.min(failures,2)),
+            revision:site.revision,failures,paused});
+          await report({id:site.id,revision:site.revision,platform:plan.platform,status,failures,paused});
+          return {id:site.id,status};
         }
         return {idle:true};
       } finally {active=false;}

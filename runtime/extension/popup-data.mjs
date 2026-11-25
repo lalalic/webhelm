@@ -17,7 +17,11 @@ function validSite(site) {
 export function mergeKeptSites(persisted, statusById, reported) {
   const sites = new Map();
   for (const site of Array.isArray(persisted) ? persisted : []) {
-    if (validSite(site)) sites.set(site.id, {...site, status:statusById?.[site.id]?.status || 'pending'});
+    if (validSite(site)) {
+      const state=statusById?.[site.id];
+      const valid=state && (state.revision===undefined || state.revision===site.revision);
+      sites.set(site.id, {...site,status:valid?state.status:'pending',...(valid&&state.paused?{paused:true}:{})});
+    }
   }
   for (const site of Array.isArray(reported) ? reported : []) {
     if (validSite(site)) sites.set(site.id, {...sites.get(site.id), ...site});
@@ -31,7 +35,7 @@ export async function readKeptSites(chromeApi, reported) {
     const stored=await chromeApi.storage.local.get(SITE_STORAGE_KEY);
     persisted=stored[SITE_STORAGE_KEY];
     const latest=await chromeApi.storage.session.get(SITE_STATUS_KEY);
-    statuses=latest[SITE_STATUS_KEY] || {};
+    statuses={...(latest[SITE_STATUS_KEY] || {}),...((await chromeApi.storage.local.get(SITE_STATUS_KEY))[SITE_STATUS_KEY] || {})};
   } catch { /* Keep any site entries returned by the current service worker. */ }
   return mergeKeptSites(persisted,statuses,reported);
 }
@@ -47,10 +51,12 @@ export async function setStoredSite(chromeApi, url, enabled) {
     enabled:true,addedAt:Date.now(),revision:crypto.randomUUID()});
   await chromeApi.storage.local.set({[SITE_STORAGE_KEY]: next.sort((a,b)=>a.id.localeCompare(b.id))});
   if (!enabled) {
-    const storedStates=await chromeApi.storage.session.get(SITE_STATUS_KEY);
-    const states=storedStates[SITE_STATUS_KEY] || {};
-    delete states[origin];
-    await chromeApi.storage.session.set({[SITE_STATUS_KEY]:states});
+    for (const storage of [chromeApi.storage.local,chromeApi.storage.session]) {
+      const storedStates=await storage.get(SITE_STATUS_KEY);
+      const states=storedStates[SITE_STATUS_KEY] || {};
+      delete states[origin];
+      await storage.set({[SITE_STATUS_KEY]:states});
+    }
   }
   return {id:origin,enabled:Boolean(enabled)};
 }

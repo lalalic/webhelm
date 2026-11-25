@@ -96,11 +96,11 @@ function renderKeptSites(sites, busy, connected) {
     return;
   }
   const labels={alive:'Logged in',login_required:'Login required',unknown:'Login not confirmed',
-    error:'Heartbeat failed',unsupported:'No heartbeat action',pending:'Checking login'};
+    error:'Heartbeat failed',release_error:'Tab release failed',unsupported:'No heartbeat action',pending:'Checking login'};
   for (const site of sites) {
     const row=document.createElement('div'); row.className='keepalive-row';
     const loggedIn=site.status==='alive';
-    const statusText=labels[site.status] || labels.pending;
+    const statusText=(labels[site.status] || labels.pending)+(site.paused?' · Paused':'');
     const status=document.createElement('span'); status.className='keepalive-status';
     status.dataset.status=loggedIn?'alive':'inactive';
     status.title=statusText;
@@ -122,7 +122,17 @@ function renderKeptSites(sites, busy, connected) {
     },'keepalive-remove');
     remove.title=`Remove ${siteLabel(site.url)} from Keep Alive`;
     remove.setAttribute('aria-label',remove.title);
-    row.append(status,name,remove);
+    row.append(status,name);
+    if (site.paused) {
+      const resume=actionButton('↻',!connected,async()=>{
+        try {await rpc('workspace.control.site.resume',{siteId:site.id});lastSiteSignature='';refresh();}
+        catch(error){el('message').textContent=error.message;}
+      },'keepalive-remove');
+      resume.title=resume.getAttribute('aria-label') || 'Resume heartbeat after signing in';
+      resume.setAttribute('aria-label',resume.title);
+      row.append(resume);
+    }
+    row.append(remove);
     target.append(row);
   }
 }

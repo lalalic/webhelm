@@ -332,10 +332,13 @@ try {
     return state.keptSites.find(entry=>entry.id===registeredOrigin && entry.status==='login_required') || null;
   },'platform heartbeat reports login required');
   assert.equal(loginRequired.platform,'e2e-platform');
-  const compact=await waitFor(async()=>evaluate(popupSid,`(()=>{const row=document.querySelector('.keepalive-row'),dot=row?.querySelector('.keepalive-status'),label=row?.querySelector('.keepalive-name'),remove=row?.querySelector('.keepalive-remove');return dot?.dataset.status==='inactive'&&label&&remove?{rowHeight:row.getBoundingClientRect().height,dotColor:getComputedStyle(dot).backgroundColor,greenLabel:label.classList.contains('is-logged-in'),removeLabel:remove.getAttribute('aria-label'),text:row.innerText,children:row.children.length}:null})()`),
+  const compact=await waitFor(async()=>evaluate(popupSid,`(()=>{const row=document.querySelector('.keepalive-row'),dot=row?.querySelector('.keepalive-status'),label=row?.querySelector('.keepalive-name'),remove=row?.querySelector('.keepalive-remove[aria-label^="Remove "]');return dot?.dataset.status==='inactive'&&label&&remove?{rowHeight:row.getBoundingClientRect().height,dotColor:getComputedStyle(dot).backgroundColor,greenLabel:label.classList.contains('is-logged-in'),removeLabel:remove.getAttribute('aria-label'),text:row.innerText,children:row.children.length}:null})()`),
     'compact gray login-required site row');
   assert.ok(compact.rowHeight <= 32,'one-line site row stays compact');
-  assert.equal(compact.children,3,'dot, hostname and remove share one row');
+  assert.equal(compact.children,4,'paused row includes explicit resume control');
+  assert.equal(loginRequired.paused,true);
+  const resumeLabel=await evaluate(popupSid,"document.querySelector('.keepalive-row button[aria-label^=\"Resume heartbeat\"]')?.getAttribute('aria-label')");
+  assert.match(resumeLabel,/Resume heartbeat/);
   assert.equal(compact.greenLabel,false);
   assert.match(compact.removeLabel,/Remove example.invalid/);
   assert.ok(!compact.text.includes('Login required'),'status is shown by color, not a second line');

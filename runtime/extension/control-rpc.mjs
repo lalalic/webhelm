@@ -119,9 +119,14 @@ export function createControlRpc({control, manager, design=null, summarizeWorksp
         const opened = await chromeApi.tabs.create({url,active:true});
         return {ok:true,tabId:opened.id,opened:true};
       }
+      case "workspace.control.site.resume": {
+        const site = (await listKeptSites(chromeApi)).find(s => s.id === args.siteId);
+        if (!site) throw Error('Keep Alive site is no longer registered');
+        return setKeptSite(chromeApi,site.url,true);
+      }
       // Daemon-only control RPCs, unavailable to extension pages.
       case "workspace.control.site.list":
-        return listKeptSites(chromeApi);
+        return sitesWithStatus(chromeApi);
       case "workspace.control.site.report":
         return reportKeptSite(chromeApi,args);
       case "workspace.control.requestStop":

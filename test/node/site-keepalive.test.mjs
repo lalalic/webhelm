@@ -53,9 +53,9 @@ test('platform must explicitly opt in; heartbeat declaration is per site and rea
 });
 
 test('scheduler checks one site at a time, handles login-required, throttles retries and defers on busy pool',async()=>{
-  let timestamp=1000, allowed=false, runs=0;
+  let timestamp=1000, allowed=false, runs=0, registration={...site,revision:'one'};
   const reports=[];
-  const scheduler=createSiteKeepaliveScheduler({listSites:async()=>[site],report:async r=>reports.push(r),
+  const scheduler=createSiteKeepaliveScheduler({listSites:async()=>[registration],report:async r=>reports.push(r),
     resolve,now:()=>timestamp,canRun:async()=>allowed,run:async()=>{runs++;return {status:'login_required'};}});
   assert.deepEqual(await scheduler.tick(),{deferred:true});
   assert.equal(runs,0);
@@ -65,7 +65,11 @@ test('scheduler checks one site at a time, handles login-required, throttles ret
   assert.equal(reports[0].status,'login_required');
   timestamp+=299999;
   assert.deepEqual(await scheduler.tick(),{idle:true});
-  timestamp++;
+  timestamp+=86400000;
+  assert.deepEqual(await scheduler.tick(),{idle:true});
+  assert.equal(runs,1);
+  assert.equal(reports[0].paused,true);
+  registration={...site,revision:'two'};
   assert.equal((await scheduler.tick()).status,'login_required');
   assert.equal(runs,2);
 });
@@ -118,4 +122,58 @@ test('keep-alive registration is restricted to the WebHelm workspace, including 
       /only from a WebHelm Session/);
   }
   assert.deepEqual(await listKeptSites(chrome),[]);
+});
+
+test('unknown and errors back off and pause after three failures; a successful revision resets the counter',async()=>{
+  let timestamp=1000, runs=0, registration={...site,revision:'one'};
+  const reports=[];
+  const scheduler=createSiteKeepaliveScheduler({listSites:async()=>[registration],report:async r=>reports.push(r),
+    resolve,now:()=>timestamp,run:async()=>{runs++;if(runs===2)throw Error('transient');return {status:runs===4?'alive':'unknown'};}});
+  await scheduler.tick();
+  timestamp+=3599999;
+  assert.deepEqual(await scheduler.tick(),{idle:true});
+  timestamp++;
+  await scheduler.tick();
+  timestamp+=7200000;
+  await scheduler.tick();
+  assert.equal(reports.at(-1).paused,true);
+  assert.equal(reports.at(-1).failures,3);
+  timestamp+=86400000;
+  assert.deepEqual(await scheduler.tick(),{idle:true});
+  registration={...site,revision:'two'};
+  assert.equal((await scheduler.tick()).status,'alive');
+  assert.equal(reports.at(-1).failures,0);
+});
+
+test('release failure fences even a new revision and retries only original cleanup',async()=>{
+  let timestamp=1000,runs=0,releases=0,registration={...site,revision:'one'};
+  const scheduler=createSiteKeepaliveScheduler({listSites:async()=>[registration],report:async()=>{},
+    resolve,now:()=>timestamp,recover:async id=>{assert.equal(id,'old-session');return ++releases===2;},
+    run:async()=>{runs++;return runs===1?{status:'release_error',releaseSessionId:'old-session'}:{status:'alive'};}});
+  assert.equal((await scheduler.tick()).status,'release_error');
+  registration={...site,revision:'two'};
+  timestamp+=60000;
+  assert.deepEqual(await scheduler.tick(),{idle:true});
+  assert.equal(runs,1);
+  timestamp+=60000;
+  assert.equal((await scheduler.tick()).status,'alive');
+  assert.equal(runs,2);
+});
+
+test('paused state survives daemon restart and explicit resume invalidates stale reports',async()=>{
+  const {chrome,session}=mockChrome();
+  const registered=await setKeptSite(chrome,site.url,true);
+  const revision=registered.sites[0].revision;
+  await reportKeptSite(chrome,{id:site.id,revision,status:'login_required',paused:true});
+  delete session['webhelm.keepalive.status.v1'];
+  let runs=0;
+  const scheduler=createSiteKeepaliveScheduler({listSites:()=>sitesWithStatus(chrome),report:r=>reportKeptSite(chrome,r),
+    resolve,run:async()=>{runs++;return {status:'alive'};}});
+  assert.deepEqual(await scheduler.tick(),{idle:true});
+  assert.equal(runs,0);
+  await setKeptSite(chrome,site.url,true);
+  assert.equal((await sitesWithStatus(chrome))[0].paused,false);
+  assert.deepEqual(await reportKeptSite(chrome,{id:site.id,revision,status:'login_required',paused:true}),{ignored:true});
+  assert.equal((await scheduler.tick()).status,'alive');
+  assert.equal(runs,1);
 });

@@ -133,7 +133,7 @@ site-specific evidence; never infer login solely from HTTP success or page
 load. WebHelm schedules only opted-in platforms, using a temporary browser
 Session and an idle pool slot. On failure, the UI displays **Check failed**;
 non-opted-in sites display **No heartbeat action** and can still be opened for
-manual login. Failed/unknown checks retry no faster than five minutes. Neither
+manual login. Login required or a Tab release failure pauses checks immediately. Unknown or failed checks back off and pause after three consecutive failures. Pause state survives restarts; after signing in, click the resume icon in Keep Alive Sites to request a fresh check. Failed releases retry cleanup of the original Session without allocating a new Tab. Neither
 heartbeat nor browser persistence guarantees that the service will extend its
 login lifetime. No automatic credential input or challenge bypass occurs.
 

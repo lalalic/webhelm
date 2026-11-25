@@ -34,28 +34,39 @@ export async function setKeptSite(chromeApi, url, enabled) {
   sites.sort((a,b) => a.id.localeCompare(b.id));
   await chromeApi.storage.local.set({[SITE_STORAGE_KEY]: sites});
   if (!enabled) {
-    const states = (await chromeApi.storage.session.get(SITE_STATUS_KEY))[SITE_STATUS_KEY] || {};
-    delete states[id];
-    await chromeApi.storage.session.set({[SITE_STATUS_KEY]: states});
+    for (const storage of [chromeApi.storage.local,chromeApi.storage.session]) {
+      const states = (await storage.get(SITE_STATUS_KEY))[SITE_STATUS_KEY] || {};
+      delete states[id];
+      await storage.set({[SITE_STATUS_KEY]: states});
+    }
   }
   return {id, enabled:Boolean(enabled), sites};
 }
 
 export async function sitesWithStatus(chromeApi) {
-  const [sites, stored] = await Promise.all([listKeptSites(chromeApi),chromeApi.storage.session.get(SITE_STATUS_KEY)]);
-  const states = stored[SITE_STATUS_KEY] || {};
-  return sites.map(site => ({...site, status:states[site.id]?.status || 'pending',
-    ...(states[site.id]?.checkedAt ? {checkedAt:states[site.id].checkedAt} : {}),
-    ...(states[site.id]?.platform ? {platform:states[site.id].platform} : {})}));
+  const [sites, stored, legacy] = await Promise.all([listKeptSites(chromeApi),
+    chromeApi.storage.local.get(SITE_STATUS_KEY),chromeApi.storage.session.get(SITE_STATUS_KEY)]);
+  return sites.map(site => {
+    const durable=stored[SITE_STATUS_KEY]?.[site.id];
+    const old=legacy[SITE_STATUS_KEY]?.[site.id];
+    const state=durable?.revision===site.revision ? durable :
+      (!durable && old && (!old.checkedAt || old.checkedAt>=site.addedAt) ? old : {});
+    return {...site,status:state.status || 'pending',
+      paused:state.paused===true || state.status==='login_required' || state.status==='release_error',
+      failures:Number.isInteger(state.failures)?state.failures:0,
+      ...(state.checkedAt ? {checkedAt:state.checkedAt} : {}),
+      ...(state.platform ? {platform:state.platform} : {})};
+  });
 }
 
 export async function reportKeptSite(chromeApi, report) {
   const registered = (await listKeptSites(chromeApi)).some(site => site.id === report?.id && site.revision === report?.revision);
-  if (!registered || !['alive','login_required','unknown','error','unsupported'].includes(report?.status))
+  if (!registered || !['alive','login_required','unknown','error','unsupported','release_error'].includes(report?.status))
     return {ignored:true};
-  const states = (await chromeApi.storage.session.get(SITE_STATUS_KEY))[SITE_STATUS_KEY] || {};
-  states[report.id] = {status:report.status,checkedAt:Date.now(),
+  const states = (await chromeApi.storage.local.get(SITE_STATUS_KEY))[SITE_STATUS_KEY] || {};
+  states[report.id] = {revision:report.revision,status:report.status,checkedAt:Date.now(),
+    failures:Math.max(0,Math.min(3,Number(report.failures)||0)),paused:report.paused===true,
     ...(typeof report.platform === 'string' ? {platform:report.platform} : {})};
-  await chromeApi.storage.session.set({[SITE_STATUS_KEY]:states});
+  await chromeApi.storage.local.set({[SITE_STATUS_KEY]:states});
   return {ok:true};
 }

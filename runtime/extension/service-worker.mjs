@@ -108,7 +108,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         !["workspace.control.requestStop", "workspace.control.queueCancel", "workspace.control.status",
          "workspace.control.activateTab", "workspace.control.openQueue",
          "workspace.control.site.toggle", "workspace.control.site.open",
-         "workspace.control.site.remove", "workspace.control.design.toggle"].includes(request.method))) {
+         "workspace.control.site.remove", "workspace.control.site.resume", "workspace.control.design.toggle"].includes(request.method))) {
     sendResponse({ok:false,error:{message:"WebHelm control actions require the toolbar popup"}});
     return false;
   }
