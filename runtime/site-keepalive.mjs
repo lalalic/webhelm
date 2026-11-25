@@ -37,8 +37,8 @@ export function resolveSiteHeartbeat(site, names=listPlatforms, manifestFor=plat
   return null;
 }
 
-// Login expiry is terminal until a new registration revision is requested.
-// Unknown results and transient failures back off rather than accelerating.
+// Only positive login evidence permits another heartbeat. All failures pause
+// until a new registration revision is explicitly requested.
 export function createSiteKeepaliveScheduler({listSites, report, run, resolve=resolveSiteHeartbeat,
   now=Date.now, canRun=async()=>true, recover=async()=>true}) {
   const next = new Map();
@@ -66,26 +66,24 @@ export function createSiteKeepaliveScheduler({listSites, report, run, resolve=re
           let plan;
           try {plan = resolve(site);} catch {plan=null; }
           if (!plan) {
-            next.set(site.id,{at:now()+5*60000,revision:site.revision});
+            next.set(site.id,{at:Infinity,revision:site.revision,paused:true});
             await report({id:site.id,revision:site.revision,status:'unsupported'});
             continue;
           }
           if (!await canRun()) return {deferred:true};
           next.set(site.id,{at:now()+plan.intervalMs,revision:site.revision});
-          let status='error', releaseSessionId;
+          let reason='error', releaseSessionId;
           try {
             const result=await run({...plan,site});
             releaseSessionId=result?.releaseSessionId;
-            status=['alive','login_required','unknown','release_error'].includes(result?.status)?result.status:'unknown';
+            reason=['alive','login_required','unknown','release_error'].includes(result?.status)?result.status:'unknown';
           } catch { /* No secret URLs, cookies, or Action traces in the popup. */ }
-          const failures=status==='error'||status==='unknown' ?
-            (current?.failures ?? site.failures ?? 0)+1 : 0;
-          const paused=status==='login_required'||status==='release_error'||failures>=3;
-          if (status==='release_error' && releaseSessionId)
+          const status=reason==='alive'?'alive':'failed';
+          const paused=status==='failed';
+          if (reason==='release_error' && releaseSessionId)
             cleanup.set(site.id,{sessionId:releaseSessionId,at:now()+60000});
-          next.set(site.id,{at:now()+Math.min(MAX_INTERVAL_MINUTES*60000,plan.intervalMs*2**Math.min(failures,2)),
-            revision:site.revision,failures,paused});
-          await report({id:site.id,revision:site.revision,platform:plan.platform,status,failures,paused});
+          next.set(site.id,{at:paused?Infinity:now()+plan.intervalMs,revision:site.revision,paused});
+          await report({id:site.id,revision:site.revision,platform:plan.platform,status,reason,paused});
           return {id:site.id,status};
         }
         return {idle:true};

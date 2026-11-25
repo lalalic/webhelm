@@ -95,12 +95,12 @@ function renderKeptSites(sites, busy, connected) {
     target.textContent='Enable Keep Alive from a WebHelm Session.';
     return;
   }
-  const labels={alive:'Logged in',login_required:'Login required',unknown:'Login not confirmed',
+  const labels={alive:'Logged in',failed:'Heartbeat failed',login_required:'Login required',unknown:'Login not confirmed',
     error:'Heartbeat failed',release_error:'Tab release failed',unsupported:'No heartbeat action',pending:'Checking login'};
   for (const site of sites) {
     const row=document.createElement('div'); row.className='keepalive-row';
     const loggedIn=site.status==='alive';
-    const statusText=(labels[site.status] || labels.pending)+(site.paused?' · Paused':'');
+    const statusText=(labels[site.status] || labels.pending)+(site.paused?' · Paused':'')+(site.reason&&site.reason!==site.status?' · '+(labels[site.reason]||site.reason):'');
     const status=document.createElement('span'); status.className='keepalive-status';
     status.dataset.status=loggedIn?'alive':'inactive';
     status.title=statusText;

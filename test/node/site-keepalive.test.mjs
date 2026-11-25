@@ -34,7 +34,7 @@ test('kept website stores its page path but not query tokens or lease state',asy
   assert.equal(JSON.stringify(local).includes('secret'),false);
   const saved=(await listKeptSites(chrome))[0];
   await reportKeptSite(chrome,{id:site.id,revision:saved.revision,status:'login_required',platform:'xhs'});
-  assert.equal((await sitesWithStatus(chrome))[0].status,'login_required');
+  assert.equal((await sitesWithStatus(chrome))[0].status,'failed');
   await setKeptSite(chrome,site.url,false);
   assert.equal((await listKeptSites(chrome)).length,0);
   await setKeptSite(chrome,site.url,true);
@@ -60,9 +60,9 @@ test('scheduler checks one site at a time, handles login-required, throttles ret
   assert.deepEqual(await scheduler.tick(),{deferred:true});
   assert.equal(runs,0);
   allowed=true;
-  assert.equal((await scheduler.tick()).status,'login_required');
+  assert.equal((await scheduler.tick()).status,'failed');
   assert.equal(runs,1);
-  assert.equal(reports[0].status,'login_required');
+  assert.equal(reports[0].status,'failed');
   timestamp+=299999;
   assert.deepEqual(await scheduler.tick(),{idle:true});
   timestamp+=86400000;
@@ -70,7 +70,7 @@ test('scheduler checks one site at a time, handles login-required, throttles ret
   assert.equal(runs,1);
   assert.equal(reports[0].paused,true);
   registration={...site,revision:'two'};
-  assert.equal((await scheduler.tick()).status,'login_required');
+  assert.equal((await scheduler.tick()).status,'failed');
   assert.equal(runs,2);
 });
 
@@ -79,7 +79,7 @@ test('scheduler does not guess login success if platform returns no recognized s
   const scheduler=createSiteKeepaliveScheduler({listSites:async()=>[site],report:async r=>reports.push(r),
     resolve,run:async()=>({ok:true})});
   await scheduler.tick();
-  assert.equal(reports[0].status,'unknown');
+  assert.equal(reports[0].status,'failed');
 });
 
 test('extension popup can toggle only a live leased tab; site opens saved path without query',async()=>{
@@ -124,25 +124,22 @@ test('keep-alive registration is restricted to the WebHelm workspace, including 
   assert.deepEqual(await listKeptSites(chrome),[]);
 });
 
-test('unknown and errors back off and pause after three failures; a successful revision resets the counter',async()=>{
-  let timestamp=1000, runs=0, registration={...site,revision:'one'};
-  const reports=[];
-  const scheduler=createSiteKeepaliveScheduler({listSites:async()=>[registration],report:async r=>reports.push(r),
-    resolve,now:()=>timestamp,run:async()=>{runs++;if(runs===2)throw Error('transient');return {status:runs===4?'alive':'unknown'};}});
-  await scheduler.tick();
-  timestamp+=3599999;
-  assert.deepEqual(await scheduler.tick(),{idle:true});
-  timestamp++;
-  await scheduler.tick();
-  timestamp+=7200000;
-  await scheduler.tick();
-  assert.equal(reports.at(-1).paused,true);
-  assert.equal(reports.at(-1).failures,3);
-  timestamp+=86400000;
-  assert.deepEqual(await scheduler.tick(),{idle:true});
-  registration={...site,revision:'two'};
-  assert.equal((await scheduler.tick()).status,'alive');
-  assert.equal(reports.at(-1).failures,0);
+test('every non-alive result pauses immediately, only alive schedules again',async()=>{
+  for (const reason of ['unknown','login_required','error','invalid']) {
+    let timestamp=1000,runs=0,registration={...site,revision:'one'};
+    const reports=[];
+    const scheduler=createSiteKeepaliveScheduler({listSites:async()=>[registration],report:async r=>reports.push(r),
+      resolve,now:()=>timestamp,run:async()=>{runs++;if(runs===1&&reason==='error')throw Error('transient');return {status:runs===1?reason:'alive'};}});
+    assert.equal((await scheduler.tick()).status,'failed');
+    assert.equal(reports.at(-1).paused,true);
+    timestamp+=86400000;
+    assert.deepEqual(await scheduler.tick(),{idle:true});
+    assert.equal(runs,1);
+    registration={...site,revision:'two'};
+    assert.equal((await scheduler.tick()).status,'alive');
+    timestamp+=1800000;
+    assert.equal((await scheduler.tick()).status,'alive');
+  }
 });
 
 test('release failure fences even a new revision and retries only original cleanup',async()=>{
@@ -150,7 +147,7 @@ test('release failure fences even a new revision and retries only original clean
   const scheduler=createSiteKeepaliveScheduler({listSites:async()=>[registration],report:async()=>{},
     resolve,now:()=>timestamp,recover:async id=>{assert.equal(id,'old-session');return ++releases===2;},
     run:async()=>{runs++;return runs===1?{status:'release_error',releaseSessionId:'old-session'}:{status:'alive'};}});
-  assert.equal((await scheduler.tick()).status,'release_error');
+  assert.equal((await scheduler.tick()).status,'failed');
   registration={...site,revision:'two'};
   timestamp+=60000;
   assert.deepEqual(await scheduler.tick(),{idle:true});

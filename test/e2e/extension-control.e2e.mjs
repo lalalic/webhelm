@@ -348,7 +348,7 @@ try {
   assert.equal(await waitFor(async()=>evaluate(popupSid,"document.querySelector('.keepalive-row .tab-title')?.textContent==='example.invalid/account'"),'site shown in Extension popup'),true);
   const loginRequired=await waitFor(async()=>{
     const state=await rpc(workerSid,'workspace.control.status');
-    return state.keptSites.find(entry=>entry.id===registeredOrigin && entry.status==='login_required') || null;
+    return state.keptSites.find(entry=>entry.id===registeredOrigin && entry.status==='failed' && entry.reason==='login_required') || null;
   },'platform heartbeat reports login required');
   assert.equal(loginRequired.platform,'e2e-platform');
   const compact=await waitFor(async()=>evaluate(popupSid,`(()=>{const row=document.querySelector('.keepalive-row'),dot=row?.querySelector('.keepalive-status'),label=row?.querySelector('.keepalive-name'),remove=row?.querySelector('.keepalive-remove[aria-label^="Remove "]');return dot?.dataset.status==='inactive'&&label&&remove&&row.children.length===4?{rowHeight:row.getBoundingClientRect().height,dotColor:getComputedStyle(dot).backgroundColor,greenLabel:label.classList.contains('is-logged-in'),removeLabel:remove.getAttribute('aria-label'),text:row.innerText,children:row.children.length}:null})()`),

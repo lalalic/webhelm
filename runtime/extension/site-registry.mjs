@@ -51,9 +51,10 @@ export async function sitesWithStatus(chromeApi) {
     const old=legacy[SITE_STATUS_KEY]?.[site.id];
     const state=durable?.revision===site.revision ? durable :
       (!durable && old && (!old.checkedAt || old.checkedAt>=site.addedAt) ? old : {});
-    return {...site,status:state.status || 'pending',
-      paused:state.paused===true || state.status==='login_required' || state.status==='release_error',
-      failures:Number.isInteger(state.failures)?state.failures:0,
+    const failed=['failed','login_required','unknown','error','release_error'].includes(state.status);
+    return {...site,status:failed?'failed':state.status || 'pending',
+      paused:failed || state.paused===true,
+      ...(failed ? {reason:state.reason || state.status} : {}),
       ...(state.checkedAt ? {checkedAt:state.checkedAt} : {}),
       ...(state.platform ? {platform:state.platform} : {})};
   });
@@ -61,11 +62,12 @@ export async function sitesWithStatus(chromeApi) {
 
 export async function reportKeptSite(chromeApi, report) {
   const registered = (await listKeptSites(chromeApi)).some(site => site.id === report?.id && site.revision === report?.revision);
-  if (!registered || !['alive','login_required','unknown','error','unsupported','release_error'].includes(report?.status))
+  if (!registered || !['alive','login_required','unknown','error','unsupported','release_error','failed'].includes(report?.status))
     return {ignored:true};
   const states = (await chromeApi.storage.local.get(SITE_STATUS_KEY))[SITE_STATUS_KEY] || {};
   states[report.id] = {revision:report.revision,status:report.status,checkedAt:Date.now(),
-    failures:Math.max(0,Math.min(3,Number(report.failures)||0)),paused:report.paused===true,
+    paused:report.paused===true,
+    ...(['login_required','unknown','error','release_error'].includes(report.reason)?{reason:report.reason}:{}),
     ...(typeof report.platform === 'string' ? {platform:report.platform} : {})};
   await chromeApi.storage.local.set({[SITE_STATUS_KEY]:states});
   return {ok:true};

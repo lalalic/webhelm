@@ -20,7 +20,8 @@ export function mergeKeptSites(persisted, statusById, reported) {
     if (validSite(site)) {
       const state=statusById?.[site.id];
       const valid=state && (state.revision===undefined || state.revision===site.revision);
-      sites.set(site.id, {...site,status:valid?state.status:'pending',...(valid&&state.paused?{paused:true}:{})});
+      const failed=valid&&['failed','login_required','unknown','error','release_error'].includes(state.status);
+      sites.set(site.id, {...site,status:failed?'failed':valid?state.status:'pending',...(failed||valid&&state.paused?{paused:true}:{}),...(failed?{reason:state.reason||state.status}:{})});
     }
   }
   for (const site of Array.isArray(reported) ? reported : []) {
