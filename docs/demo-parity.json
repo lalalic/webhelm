@@ -1,0 +1,33 @@
+{
+  "protocol": "webhelm.demo/1",
+  "source_of_truth": "iPhoneHelm native/NeoUseDemoCommands.inc",
+  "canonical_command_count": 14,
+  "note": "The authoritative NeoUse source enumerates 14 commands. Request prose saying 15 is treated as a count typo; WebHelm must reject any extra command rather than invent contract behavior.",
+  "commands": [
+    {"command":"step","arguments":{"title":{"type":"string","min":1,"max":1500}},"effect":"numbered step + persistent capture overlay","event_fields":["title","number"],"recording_only":false},
+    {"command":"spotlight","arguments":{"target":{"oneOf":["fresh ref","safe accessible label"]},"text":{"type":"string","optional":true,"max":1500}},"effect":"red target box, clears tooltip, captures frame","event_fields":["frame"],"recording_only":false},
+    {"command":"annotate","arguments":{"target":{"oneOf":["fresh ref","safe accessible label"]},"text":{"type":"string","min":1,"max":1500}},"effect":"yellow target box + tooltip","event_fields":["frame","text"],"recording_only":false},
+    {"command":"caption","arguments":{"text":{"type":"string","min":1,"max":1500}},"effect":"persistent lower caption","event_fields":["text"],"recording_only":false},
+    {"command":"say","arguments":{"text":{"type":"string","min":1,"max":1500}},"effect":"caption + Markcut narration track","event_fields":["text"],"recording_only":false},
+    {"command":"cursor","arguments":{"target":{"oneOf":["fresh ref","safe accessible label"]}},"effect":"animated cursor endpoint on composed output","event_fields":["frame"],"recording_only":false},
+    {"command":"highlight","arguments":{"target":{"oneOf":["fresh ref","safe accessible label"]}},"effect":"650 ms yellow target box","event_fields":["frame"],"recording_only":false},
+    {"command":"clear","arguments":{},"effect":"clear overlay state and resume","event_fields":[],"recording_only":false},
+    {"command":"pause","arguments":{},"effect":"block event-producing commands","event_fields":[],"recording_only":false},
+    {"command":"resume","arguments":{},"effect":"resume event production","event_fields":[],"recording_only":false},
+    {"command":"wait","arguments":{"ms":{"type":"safe integer","min":0,"max":30000}},"effect":"sleep after event timestamp","event_fields":["ms"],"recording_only":false},
+    {"command":"status","arguments":{},"effect":"read state","event_fields":[],"recording_only":false},
+    {"command":"start_recording","arguments":{"output_dir":{"type":"nonempty directory path","webhelm_only":true},"fps":{"type":"integer","min":1,"max":30,"default":15,"webhelm_only":true}},"effect":"reset timeline and begin CDP capture first","event_fields":[],"result":{"protocol":true,"recording_started_at_unix_ms":true,"video_recorded":false,"events_recorded":true}},
+    {"command":"stop_recording","arguments":{"output_dir":{"type":"same directory as start","webhelm_only":true},"markcut":{"type":"CLI path","required_for_export":true,"webhelm_only":true},"render":{"type":"boolean","default":true,"webhelm_only":true},"voice":{"type":"boolean","default":true,"webhelm_only":true}},"effect":"end timeline then compose and validate artifacts","event_fields":[],"result":{"recording_started_at_unix_ms":true,"recording_ended_at_unix_ms":true,"video_recorded":"true only after valid H.264 capture, ffprobe and Markcut verify, plus render validation when requested","events":true,"screen_points":true}}
+  ],
+  "target_resolution": {"fresh_ref":"unique snapshot-generation data-ref from the current snapshot and active target","label":"case-insensitive accessible-label substring among visible interactive nodes","reject":["missing ref","stale snapshot generation","ambiguous label","invisible","zero area","outside viewport","wrong session or target"],"browser_effects":"Runtime.evaluate read only; no overlay DOM, focus, clicks, or style mutation"},
+  "timing": {"absolute_time":"Date.now() epoch milliseconds for at_unix_ms","relative_time":"performance.now() monotonic milliseconds from recording start","relative_origin":"start_recording receipt after screencast is live","capture_start":"before start_recording returns and before any later Demo event","video_offset":"recording_started_at_unix_ms - capture_origin_unix_ms","bounds":{"recording_ms":300000,"capture_bytes":268435456}},
+  "browser_differences": [
+    "Viewport CSS pixels replace iOS screen points; capture metadata may be scaled.",
+    "CDP Page.screencastFrame emits changed real tab frames; the daemon streams the latest real frame into a live FFmpeg encoder at requested cadence to preserve real-time duration.",
+    "The owned active tab is brought to foreground during capture so Chrome renders its screencast.",
+    "Overlays are added by daemon-owned FFmpeg composition, not an OS-level layer.",
+    "macOS say plus AAC narration replaces iOS-side voice behavior; --no-voice omits it and Markcut verification still runs."
+  ],
+  "artifacts": ["capture.mp4","timeline.json","markcut/video.md","markcut/events.json","markcut/assets/screen.mp4","markcut/assets/voice-*.m4a when say and voice enabled","markcut/video.mp4 by default; omitted with --no-render"],
+  "isolation": ["only active WebHelm Session target is resolved or captured","screencast callback is bound by CDP sessionId","second Session/tab receives no Demo mutation","stop, close, expiry and capture failure dispose capture and listener without unrelated tab closure"]
+}

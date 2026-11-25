@@ -155,6 +155,32 @@ A Session stopped or garbage-collected independently also auto-unsplits.
 
 Example:
   webhelm design stop SESSION_ID`,
+  demo: `webhelm demo — record an iPhoneHelm-compatible browser demo
+
+Usage:
+  webhelm demo SESSION_ID COMMAND [OPTIONS]
+
+Commands:
+  step --title TITLE                 Add a numbered step
+  spotlight (--ref REF|--label TEXT) [--text TEXT]
+  annotate (--ref REF|--label TEXT) --text TEXT
+  cursor|highlight (--ref REF|--label TEXT)
+  caption|say --text TEXT
+  clear|pause|resume|status
+  wait --ms 0..30000
+  start_recording --output-dir DIR [--fps 1..30]
+  stop_recording --output-dir DIR --markcut PATH [--render|--no-render] [--no-voice]
+
+Start uses daemon-owned live CDP screencast frames before Demo events and errors
+when actual video is unavailable. stop writes capture.mp4, timeline.json and
+Markcut's video.md, events.json, assets/screen.mp4 and rendered video.mp4 by
+default. --no-render skips the final composition. Target DOM is never decorated
+or input-intercepted.
+
+Examples:
+  webhelm demo SESSION_ID start_recording --output-dir /tmp/webhelm-demo --fps 15
+  webhelm demo SESSION_ID step --title "Open preferences"
+  webhelm demo SESSION_ID stop_recording --output-dir /tmp/webhelm-demo --markcut $(command -v markcut)`,
   session: `webhelm session — manage persistent JavaScript browser Sessions
 
 Usage:
