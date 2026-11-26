@@ -31,3 +31,14 @@ Overlays work without recording and are represented only in captured frame compo
 Each command is serialized on the owning Session mutex. CDP screencast callbacks filter by CDP `sessionId`, so another Session or tab is untouched. Capture brings the Session's active target to the foreground so CDP can render it; switching targets during recording is rejected. Outside recording, Demo follows the Session's current active target. Normal stop, close, idle expiry, export failure, capture failure, and daemon process cleanup dispose the encoder, remove its listener, and clear Demo state before tab release; release failure leaves Session ownership available for retry without closing unrelated tabs or changing the signed-in profile.
 
 Target refs must be unique, visible, positive-area, and current in the owning Session; accessible labels are case-insensitive substrings of visible interactive nodes and ambiguity is rejected. Resolution is read-only. `docs/demo-parity.json` is the machine-readable matrix; `docs/demo-recipe.json` is the deterministic local recipe.
+
+## Verification
+
+The default `npm test` suite covers the command protocol, ownership, timing,
+validation and non-media behavior without FFmpeg, ffprobe or Markcut. Run
+`npm run test:demo-media` explicitly on a machine with those three tools
+installed (set `WEBHELM_DEMO_MARKCUT` to override the executable). It checks
+real H.264 encoding, probe failure, artifact layout and overwrite refusal.
+The real browser integration remains `node test/e2e/demo-engine.e2e.mjs`.
+These media gates are separate from the dependency-free npm publication tests;
+do not interpret a passing default test suite as proof of media encoding.

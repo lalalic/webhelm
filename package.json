@@ -18,6 +18,7 @@
   ],
   "scripts": {
     "test": "node --test test/node/*.test.mjs test/workspace-manager.test.mjs test/skill/*.test.mjs",
+    "test:demo-media": "node --test test/e2e/demo-media.test.mjs",
     "test:package": "npm pack --dry-run --json",
     "test:e2e:extension": "node test/e2e/extension-control.e2e.mjs",
     "test:e2e:chatgpt-mvps": "node scripts/chatgpt-three-mvps.mjs"
