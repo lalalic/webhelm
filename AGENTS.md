@@ -24,3 +24,9 @@ daemon. The script is externally side-effecting and must not be invoked by
 ordinary `npm test`. An isolated manual Queue is diagnostic only, not native
 Queue gate evidence. Save the sanitized evidence and verify owned Session
 cleanup; never touch old uncertain queue rows.
+
+## Source navigation
+
+Design, Planner, Implementation and Reviewer use this entry and only relevant current references. Use the discovered `code-intelligence` Skill for targeted implementation evidence; use the actual checkout and tests to resolve discrepancies. Do not bulk-read source or historical evidence.
+
+Read [Queue integration](docs/QUEUE_INTEGRATION.md) for queue/session work and [Demo engine](docs/demo-engine.md) for demo changes; verify applicable details against current runtime code. Audit/evidence docs are not default context.
